@@ -288,6 +288,21 @@ export function setAccountStatus(id, status) {
 }
 
 /**
+ * Persist tokens (apiKey / refreshToken / idToken) onto an account.
+ * Fields with undefined are left unchanged. Always flushes to disk so the
+ * rotation survives a restart even if the caller never saves explicitly.
+ */
+export function setAccountTokens(id, { apiKey, refreshToken, idToken } = {}) {
+  const account = accounts.find(a => a.id === id);
+  if (!account) return false;
+  if (apiKey != null) account.apiKey = apiKey;
+  if (refreshToken != null) account.refreshToken = refreshToken;
+  if (idToken != null) account.idToken = idToken;
+  saveAccounts();
+  return true;
+}
+
+/**
  * Reset error count for an account.
  */
 export function resetAccountErrors(id) {
