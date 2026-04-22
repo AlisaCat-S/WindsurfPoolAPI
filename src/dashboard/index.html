@@ -1100,6 +1100,50 @@ tbody tr:hover td { background: var(--surface-2); }
       </div>
     </div>
 
+    <!-- Token 快捷提交 -->
+    <div class="section">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Token 快捷提交</div>
+          <div class="section-desc">推荐使用 Token 方式添加账号 · <a href="https://windsurf.com/editor/show-auth-token?workflow=" target="_blank" style="color:var(--accent)">获取 Token ↗</a></div>
+        </div>
+      </div>
+      <div class="section-body">
+        <!-- 切换：单个 / 批量 -->
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button class="btn btn-xs" id="token-mode-single" onclick="App.setTokenMode('single')" style="background:var(--accent);color:#fff">单个添加</button>
+          <button class="btn btn-ghost btn-xs" id="token-mode-batch" onclick="App.setTokenMode('batch')">批量添加</button>
+        </div>
+        <!-- 单个模式 -->
+        <div id="token-single-form">
+          <div class="field-row">
+            <div class="field" style="flex:3">
+              <label class="field-label">Token</label>
+              <input id="token-single-input" class="input" placeholder="粘贴 Windsurf Auth Token...">
+            </div>
+            <div class="field" style="max-width:200px">
+              <label class="field-label">标签（可选）</label>
+              <input id="token-single-label" class="input" placeholder="备注">
+            </div>
+          </div>
+          <div class="field-row-actions">
+            <button class="btn btn-primary" onclick="App.addSingleToken()">添加 Token</button>
+          </div>
+        </div>
+        <!-- 批量模式 -->
+        <div id="token-batch-form" style="display:none">
+          <div class="field">
+            <label class="field-label">Token 列表（每行一个）</label>
+            <textarea id="token-batch-input" class="input" rows="6" style="resize:vertical;font-family:var(--mono);font-size:12px" placeholder="token_1&#10;token_2&#10;token_3&#10;...每行粘贴一个 Token"></textarea>
+          </div>
+          <div class="field-row-actions" style="margin-top:8px;display:flex;align-items:center;gap:12px">
+            <button class="btn btn-primary" id="token-batch-btn" onclick="App.addBatchTokens()">批量添加</button>
+            <span id="token-batch-status" style="font-size:12px;color:var(--text-dim)"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div id="ls-pool-card"></div>
 
     <div class="section">
@@ -2146,6 +2190,91 @@ const App = {
       cb.checked = !cb.checked;
       cb.dispatchEvent(new Event('change'));
     });
+  },
+
+  // ─── Token 快捷提交 ──────────────────────────
+  setTokenMode(mode) {
+    const singleBtn = document.getElementById('token-mode-single');
+    const batchBtn = document.getElementById('token-mode-batch');
+    const singleForm = document.getElementById('token-single-form');
+    const batchForm = document.getElementById('token-batch-form');
+    if (mode === 'batch') {
+      singleBtn.className = 'btn btn-ghost btn-xs';
+      singleBtn.style.cssText = '';
+      batchBtn.className = 'btn btn-xs';
+      batchBtn.style.cssText = 'background:var(--accent);color:#fff';
+      singleForm.style.display = 'none';
+      batchForm.style.display = 'block';
+    } else {
+      batchBtn.className = 'btn btn-ghost btn-xs';
+      batchBtn.style.cssText = '';
+      singleBtn.className = 'btn btn-xs';
+      singleBtn.style.cssText = 'background:var(--accent);color:#fff';
+      singleForm.style.display = 'block';
+      batchForm.style.display = 'none';
+    }
+  },
+
+  async addSingleToken() {
+    const token = document.getElementById('token-single-input').value.trim();
+    const label = document.getElementById('token-single-label').value.trim();
+    if (!token) return this.toast('请输入 Token', 'error');
+    const r = await this.api('POST', '/accounts', { token, label });
+    if (r.success) {
+      this.toast('Token 账号已添加');
+      document.getElementById('token-single-input').value = '';
+      document.getElementById('token-single-label').value = '';
+      this.loadAccounts();
+    } else {
+      this.toast(r.error || '添加失败', 'error');
+    }
+  },
+
+  async addBatchTokens() {
+    const raw = document.getElementById('token-batch-input').value.trim();
+    if (!raw) return this.toast('请输入至少一个 Token', 'error');
+    const tokens = raw.split('\n').map(l => l.trim()).filter(Boolean);
+    if (tokens.length === 0) return this.toast('未检测到有效 Token', 'error');
+
+    const btn = document.getElementById('token-batch-btn');
+    const status = document.getElementById('token-batch-status');
+    btn.disabled = true;
+    btn.textContent = '提交中...';
+    status.textContent = `正在添加 ${tokens.length} 个 Token...`;
+
+    try {
+      const r = await this.api('POST', '/accounts/batch-add', { tokens });
+      if (r.success) {
+        const msg = `成功 ${r.succeeded} 个` + (r.failed > 0 ? `，失败 ${r.failed} 个` : '');
+        this.toast(msg, r.failed > 0 ? 'warn' : 'success');
+        status.textContent = msg;
+        status.style.color = r.failed > 0 ? 'var(--warn)' : 'var(--success)';
+        if (r.succeeded > 0) {
+          document.getElementById('token-batch-input').value = '';
+        }
+        // Show failed tokens detail
+        if (r.failed > 0 && r.results) {
+          const failedLines = r.results
+            .map((res, i) => !res.success ? `行 ${i + 1}: ${res.error}` : null)
+            .filter(Boolean);
+          if (failedLines.length > 0) {
+            status.textContent += ' — ' + failedLines.join('; ');
+          }
+        }
+        this.loadAccounts();
+      } else {
+        this.toast(r.error || '批量添加失败', 'error');
+        status.textContent = r.error || '批量添加失败';
+        status.style.color = 'var(--error)';
+      }
+    } catch (err) {
+      this.toast('请求失败: ' + err.message, 'error');
+      status.textContent = '请求失败';
+      status.style.color = 'var(--error)';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '批量添加';
+    }
   },
 
   async addAccount() {

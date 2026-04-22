@@ -135,6 +135,30 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     }
   }
 
+  // POST /accounts/batch-add — batch add tokens
+  if (subpath === '/accounts/batch-add' && method === 'POST') {
+    const tokens = body.tokens;
+    if (!Array.isArray(tokens) || tokens.length === 0) {
+      return json(res, 400, { error: 'Provide tokens[] array' });
+    }
+    const results = [];
+    for (const t of tokens) {
+      try {
+        const token = typeof t === 'string' ? t : t.token;
+        const label = typeof t === 'string' ? '' : (t.label || '');
+        if (!token) { results.push({ error: 'Empty token' }); continue; }
+        const account = await addAccountByToken(token.trim(), label);
+        probeAccount(account.id).catch(() => {});
+        results.push({ id: account.id, email: account.email, status: account.status, success: true });
+      } catch (err) {
+        results.push({ error: err.message, success: false });
+      }
+    }
+    const succeeded = results.filter(r => r.success).length;
+    const failed = results.filter(r => !r.success).length;
+    return json(res, 200, { success: true, results, succeeded, failed, ...getAccountCount() });
+  }
+
   // POST /accounts/probe-all — probe every active account
   if (subpath === '/accounts/probe-all' && method === 'POST') {
     const list = getAccountList().filter(a => a.status === 'active');
