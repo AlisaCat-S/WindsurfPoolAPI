@@ -1,7 +1,7 @@
 services:
   windsurfapi:
-    build: .
-    image: windsurfapi:latest
+    # build: .
+    image: ghcr.io/alisacat-s/windsurfpoolapi:latest
     container_name: windsurfapi
     restart: unless-stopped
     ports:
