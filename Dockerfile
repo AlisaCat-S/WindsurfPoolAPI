@@ -29,7 +29,7 @@ RUN set -eux; \
       | grep -oE "https://[^\"]+/${ASSET}" | head -1); \
     if [ -z "$RELEASE_URL" ]; then echo "Failed to find asset $ASSET"; exit 1; fi; \
     echo "Downloading $ASSET from $RELEASE_URL ..."; \
-    wget -q --show-progress -O "/opt/windsurf/${ASSET}" "$RELEASE_URL"; \
+    wget -q -O "/opt/windsurf/${ASSET}" "$RELEASE_URL"; \
     chmod +x "/opt/windsurf/${ASSET}"; \
     ls -lh /opt/windsurf/
 
