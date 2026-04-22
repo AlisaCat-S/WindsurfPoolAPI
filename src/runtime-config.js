@@ -15,8 +15,18 @@ import { log } from './config.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FILE = resolve(__dirname, '..', 'runtime-config.json');
 
+// Keys that hold numeric values instead of booleans.
+const NUMERIC_KEYS = new Set(['responseCacheTTL']);
+
 const DEFAULTS = {
   experimental: {
+    // Local exact-match response cache for chat completions. When enabled,
+    // identical requests within the TTL window return the stored response
+    // instantly. Disable to force every request to hit the upstream model.
+    responseCache: true,
+    // Response cache TTL in seconds. Default 300 = 5 minutes.
+    // Set to 0 to effectively disable caching (entries expire immediately).
+    responseCacheTTL: 300,
     // Reuse Cascade cascade_id across multi-turn requests when the history
     // fingerprint matches. Big latency win for long conversations but relies
     // on Windsurf keeping the cascade alive — off by default.
@@ -80,13 +90,21 @@ export function isExperimentalEnabled(key) {
   return !!_state.experimental?.[key];
 }
 
+export function getExperimentalValue(key) {
+  return _state.experimental?.[key] ?? DEFAULTS.experimental?.[key];
+}
+
 export function setExperimental(patch) {
   if (!patch || typeof patch !== 'object') return getExperimental();
   _state.experimental = { ...(_state.experimental || {}), ...patch };
-  // Coerce to booleans — the dashboard ships JSON but we never want truthy
-  // strings sneaking in as "true".
+  // Coerce values: numeric keys stay as numbers, everything else becomes boolean.
   for (const k of Object.keys(_state.experimental)) {
-    _state.experimental[k] = !!_state.experimental[k];
+    if (NUMERIC_KEYS.has(k)) {
+      const n = Number(_state.experimental[k]);
+      _state.experimental[k] = Number.isFinite(n) && n >= 0 ? n : DEFAULTS.experimental[k];
+    } else {
+      _state.experimental[k] = !!_state.experimental[k];
+    }
   }
   persist();
   return getExperimental();

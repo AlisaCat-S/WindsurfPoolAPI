@@ -219,7 +219,7 @@ export async function handleChatCompletions(body) {
 
   const chatId = genId();
   const created = Math.floor(Date.now() / 1000);
-  const ckey = cacheKey(body);
+  const ckey = isExperimentalEnabled('responseCache') ? cacheKey(body) : null;
 
   if (stream) {
     return streamResponse(chatId, created, displayModel, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, toolPreamble, source, creditMultiplier);

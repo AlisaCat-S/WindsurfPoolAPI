@@ -5,13 +5,23 @@
  * so we add an in-memory, exact-match cache keyed on the normalized request
  * body. This only helps with duplicate requests (Anthropic clients retries, parallel
  * identical calls), not prefix-caching.
+ *
+ * TTL is configurable at runtime via the `responseCacheTTL` experimental flag
+ * (in seconds). Default: 300 s (5 min).
  */
 
 import { createHash } from 'crypto';
 import { log } from './config.js';
+import { getExperimentalValue } from './runtime-config.js';
 
-const TTL_MS = 5 * 60 * 1000;
+const DEFAULT_TTL_MS = 5 * 60 * 1000;
 const MAX_ENTRIES = 500;
+
+/** Return the current TTL in milliseconds, reading from runtime config. */
+function getTTL() {
+  const seconds = getExperimentalValue('responseCacheTTL');
+  return (typeof seconds === 'number' && seconds >= 0) ? seconds * 1000 : DEFAULT_TTL_MS;
+}
 
 // Map preserves insertion order → we evict the oldest when over capacity.
 const _store = new Map();
@@ -36,6 +46,7 @@ export function cacheKey(body) {
 }
 
 export function cacheGet(key) {
+  if (!key) return null;
   const entry = _store.get(key);
   if (!entry) { _stats.misses++; return null; }
   if (entry.expiresAt < Date.now()) {
@@ -51,9 +62,10 @@ export function cacheGet(key) {
 }
 
 export function cacheSet(key, value) {
+  if (!key) return;
   // Don't cache empty or partial results
   if (!value || (!value.text && !(value.chunks && value.chunks.length))) return;
-  _store.set(key, { value, expiresAt: Date.now() + TTL_MS });
+  _store.set(key, { value, expiresAt: Date.now() + getTTL() });
   _stats.stores++;
   while (_store.size > MAX_ENTRIES) {
     const oldest = _store.keys().next().value;
@@ -67,7 +79,7 @@ export function cacheStats() {
   return {
     size: _store.size,
     maxSize: MAX_ENTRIES,
-    ttlMs: TTL_MS,
+    ttlMs: getTTL(),
     hits: _stats.hits,
     misses: _stats.misses,
     stores: _stats.stores,
