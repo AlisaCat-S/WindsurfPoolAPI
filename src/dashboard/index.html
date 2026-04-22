@@ -1483,6 +1483,38 @@ tbody tr:hover td { background: var(--surface-2); }
         </div>
       </div>
     </div>
+    <div class="section" style="margin-top:24px">
+      <div class="section-header">
+        <div class="section-title">响应缓存</div>
+      </div>
+      <div class="section-body">
+        <div class="section-desc" style="margin-bottom:12px">
+          对完全相同的请求体（model + messages + 参数）在 TTL 窗口内返回缓存的响应，
+          避免重复消耗上游额度。关闭后每次请求都会走上游模型，适合需要"重新生成"不同回复的场景。
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+          <label class="switch">
+            <input type="checkbox" id="exp-response-cache" onchange="App.toggleExperimental('responseCache', this.checked)">
+            <span class="switch-slider"></span>
+          </label>
+          <div>
+            <div style="font-weight:500">启用响应缓存</div>
+            <div class="text-sm text-muted">默认开启。关闭后已有缓存会被自动清空。</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <label style="font-weight:500;white-space:nowrap">缓存 TTL</label>
+          <input type="number" id="exp-cache-ttl" class="input" style="width:100px" min="0" step="10" placeholder="300">
+          <span class="text-sm text-muted">秒</span>
+          <button class="btn btn-outline btn-sm" onclick="App.updateCacheTTL()">应用</button>
+        </div>
+        <div class="metrics-grid" id="exp-cache-cards"></div>
+        <div style="margin-top:12px">
+          <button class="btn btn-outline btn-sm" onclick="App.clearResponseCache()">清空响应缓存</button>
+          <button class="btn btn-ghost btn-sm" onclick="App.loadExperimental()">刷新</button>
+        </div>
+      </div>
+    </div>
   </section>
 </main>
 
@@ -2794,6 +2826,29 @@ const App = {
         <div class="card-sub">过期 ${pool.expired || 0} · 淘汰 ${pool.evictions || 0}</div>
       </div>
     `;
+    // Response cache UI
+    const rcCb = document.getElementById("exp-response-cache");
+    if (rcCb) rcCb.checked = !!d.flags?.responseCache;
+    const ttlInput = document.getElementById("exp-cache-ttl");
+    if (ttlInput) ttlInput.value = d.flags?.responseCacheTTL ?? 300;
+    const rc = d.responseCache || {};
+    document.getElementById("exp-cache-cards").innerHTML = `
+      <div class="card info">
+        <div class="card-header"><div class="card-title">命中率</div></div>
+        <div class="card-value">${rc.hitRate || "0.0"}%</div>
+        <div class="card-sub">${rc.hits || 0} 命中 / ${rc.misses || 0} 未命中</div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">缓存条目</div></div>
+        <div class="card-value">${rc.size || 0}</div>
+        <div class="card-sub">上限 ${rc.maxSize || 0} · TTL ${Math.round((rc.ttlMs || 0) / 1000)}秒</div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">存储次数</div></div>
+        <div class="card-value">${rc.stores || 0}</div>
+        <div class="card-sub">淘汰 ${rc.evictions || 0}</div>
+      </div>
+    `;
   },
 
   async toggleExperimental(key, enabled) {
@@ -2815,6 +2870,26 @@ const App = {
     this.loadExperimental();
   },
 
+  async updateCacheTTL() {
+    const input = document.getElementById("exp-cache-ttl");
+    const val = parseInt(input?.value, 10);
+    if (isNaN(val) || val < 0) { this.toast("TTL 必须是非负整数", "error"); return; }
+    try {
+      await this.api("PUT", "/experimental", { responseCacheTTL: val });
+      this.toast(`缓存 TTL 已设为 ${val} 秒`, "success");
+      this.loadExperimental();
+    } catch (e) {
+      this.toast("设置失败：" + e.message, "error");
+    }
+  },
+
+  async clearResponseCache() {
+    const ok = await this.confirm("清空响应缓存", "所有已缓存的响应将被清除，下次相同请求会重新走上游模型。确定继续吗？", { okText: "清空" });
+    if (!ok) return;
+    await this.api("DELETE", "/cache");
+    this.toast("响应缓存已清空", "success");
+    this.loadExperimental();
+  },
   // ─── Ban Detection ───────────────────────────
   async loadBans() {
     const d = await this.api('GET', '/accounts');

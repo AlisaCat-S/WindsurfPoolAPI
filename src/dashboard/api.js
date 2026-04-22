@@ -85,13 +85,14 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
 
   // ─── Experimental features ────────────────────────────
   if (subpath === '/experimental' && method === 'GET') {
-    return json(res, 200, { flags: getExperimental(), conversationPool: convPoolStats() });
+    return json(res, 200, { flags: getExperimental(), conversationPool: convPoolStats(), responseCache: cacheStats() });
   }
   if (subpath === '/experimental' && method === 'PUT') {
     const flags = setExperimental(body || {});
     // Dropping the toggle should also drop any live entries so nothing
     // resumes against a disabled feature on the next request.
     if (!flags.cascadeConversationReuse) convPoolClear();
+    if (!flags.responseCache) cacheClear();
     return json(res, 200, { success: true, flags });
   }
   if (subpath === '/experimental/conversation-pool' && method === 'DELETE') {
