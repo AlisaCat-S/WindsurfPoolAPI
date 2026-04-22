@@ -42,3 +42,4 @@ __pycache__/
 .claude/
 .playwright-mcp/
 dist/
+windsurf/

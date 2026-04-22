@@ -12,18 +12,18 @@ services:
       DEFAULT_MODEL: gpt-4o-mini
       MAX_TOKENS: 8192
       LOG_LEVEL: info
-      # Set a password to protect the dashboard. Leave empty for open access.
       DASHBOARD_PASSWORD: ""
-      # Optional — require an API key for /v1/* endpoints.
       API_KEY: ""
     volumes:
-      # Persist runtime state across container restarts.
+      # Runtime state files
       - ./accounts.json:/app/accounts.json
       - ./stats.json:/app/stats.json
       - ./runtime-config.json:/app/runtime-config.json
       - ./proxy-config.json:/app/proxy-config.json
       - ./model-access.json:/app/model-access.json
       - ./logs:/app/logs
+      # Language Server binary (run ./download-ls.sh first)
+      - ./windsurf:/opt/windsurf:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3003/health"]
       interval: 30s
