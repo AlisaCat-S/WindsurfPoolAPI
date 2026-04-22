@@ -5,6 +5,10 @@ FROM node:20-slim
 
 WORKDIR /app
 
+# Install CA certificates for TLS verification (needed by the Go-based LS binary).
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY package.json ./
 COPY src ./src
 COPY docs ./docs
