@@ -9,7 +9,9 @@ services:
     environment:
       PORT: 3003
       LS_PORT: 42100
-      LS_BINARY_PATH: /opt/windsurf/language_server_linux_x64
+      # LS_BINARY_PATH is auto-detected by the app based on container arch.
+      # Override only if your binary is in a non-standard location.
+      # LS_BINARY_PATH: /opt/windsurf/language_server_linux_x64
       DEFAULT_MODEL: gpt-4o-mini
       MAX_TOKENS: 8192
       LOG_LEVEL: info
