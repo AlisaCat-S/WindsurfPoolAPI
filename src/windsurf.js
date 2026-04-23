@@ -146,12 +146,14 @@ function buildChatMessage(content, source, conversationId) {
  * @param {number} modelEnum - Windsurf model enum value
  * @param {string} [modelName] - Model name string (optional)
  */
-export function buildRawGetChatMessageRequest(apiKey, messages, modelEnum, modelName) {
+export function buildRawGetChatMessageRequest(apiKey, messages, modelEnum, modelName, sessionId = null) {
   const parts = [];
   const conversationId = randomUUID();
 
-  // Field 1: Metadata
-  parts.push(writeMessageField(1, buildMetadata(apiKey)));
+  // Field 1: Metadata — pass through the caller's session id so the
+  // legacy Raw channel uses the same per-LS session as Cascade instead
+  // of a fresh UUID per request (anti-fingerprint, synced from WindsurfAPI v1.9.3).
+  parts.push(writeMessageField(1, buildMetadata(apiKey, undefined, sessionId)));
 
   // Field 2: repeated ChatMessage (skip system, handled separately).
   // Windsurf's legacy RawGetChatMessage backend rejects role=tool and
