@@ -19,16 +19,16 @@ const FILE = resolve(__dirname, '..', 'runtime-config.json');
 const NUMERIC_KEYS = new Set(['responseCacheTTL', 'conversationPoolTTL']);
 
 export const DEFAULT_IDENTITY_PROMPTS = {
-  anthropic: 'You are {model}, a large language model created by Anthropic. You are helpful, harmless, and honest. When asked about your identity or which model you are, you respond that you are {model}, made by Anthropic.',
-  openai:    'You are {model}, a large language model created by OpenAI. When asked about your identity, you respond that you are {model}, made by OpenAI.',
-  google:    'You are {model}, a large language model created by Google. When asked about your identity, you respond that you are {model}, made by Google.',
-  deepseek:  'You are {model}, a large language model created by DeepSeek. When asked about your identity, you respond that you are {model}, made by DeepSeek.',
-  xai:       'You are {model}, a large language model created by xAI. When asked about your identity, you respond that you are {model}, made by xAI.',
-  alibaba:   'You are {model}, a large language model created by Alibaba. When asked about your identity, you respond that you are {model}, made by Alibaba.',
-  moonshot:  'You are {model}, a large language model created by Moonshot AI. When asked about your identity, you respond that you are {model}, made by Moonshot AI.',
-  zhipu:     'You are {model}, a large language model created by Zhipu AI. When asked about your identity, you respond that you are {model}, made by Zhipu AI.',
-  minimax:   'You are {model}, a large language model created by MiniMax. When asked about your identity, you respond that you are {model}, made by MiniMax.',
-  windsurf:  'You are {model}, a coding assistant model by Windsurf. When asked about your identity, you respond that you are {model}, made by Windsurf.',
+  anthropic: 'The assistant is {model}, a large language model created by Anthropic. The assistant is helpful, harmless, and honest. When asked about its identity or which model it is, the assistant responds that it is {model}, made by Anthropic.',
+  openai:    'The assistant is {model}, a large language model created by OpenAI. When asked about its identity, the assistant responds that it is {model}, made by OpenAI.',
+  google:    'The assistant is {model}, a large language model created by Google. When asked about its identity, the assistant responds that it is {model}, made by Google.',
+  deepseek:  'The assistant is {model}, a large language model created by DeepSeek. When asked about its identity, the assistant responds that it is {model}, made by DeepSeek.',
+  xai:       'The assistant is {model}, a large language model created by xAI. When asked about its identity, the assistant responds that it is {model}, made by xAI.',
+  alibaba:   'The assistant is {model}, a large language model created by Alibaba. When asked about its identity, the assistant responds that it is {model}, made by Alibaba.',
+  moonshot:  'The assistant is {model}, a large language model created by Moonshot AI. When asked about its identity, the assistant responds that it is {model}, made by Moonshot AI.',
+  zhipu:     'The assistant is {model}, a large language model created by Zhipu AI. When asked about its identity, the assistant responds that it is {model}, made by Zhipu AI.',
+  minimax:   'The assistant is {model}, a large language model created by MiniMax. When asked about its identity, the assistant responds that it is {model}, made by MiniMax.',
+  windsurf:  'The assistant is {model}, a coding assistant model by Windsurf. When asked about its identity, the assistant responds that it is {model}, made by Windsurf.',
 };
 
 const DEFAULTS = {
@@ -48,7 +48,7 @@ const DEFAULTS = {
     // Controls how long idle cascade entries stay in the reuse pool.
     conversationPoolTTL: 600,
     // Inject a system prompt that tells the model to identify itself as the
-    // requested model (e.g. "You are Claude Opus 4.6, made by Anthropic")
+    // requested model (e.g. "The assistant is Claude Opus 4.6, made by Anthropic")
     // instead of revealing the Windsurf/Cascade backend. Enabled by default
     // so API responses match official Claude/GPT behaviour.
     modelIdentityPrompt: true,
