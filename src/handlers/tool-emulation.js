@@ -424,18 +424,22 @@ export class ToolCallStreamParser {
 
   flush() {
     const remaining = this.buffer;
-    this.buffer = '';
+    // NOTE: do NOT clear this.buffer yet -- _findClosingBrace() reads it.
     if (this.inToolCall) {
       this.inToolCall = false;
+      this.buffer = '';
       return { text: `<tool_call>${remaining}`, toolCalls: [] };
     }
     if (this.inToolResult) {
       this.inToolResult = false;
+      this.buffer = '';
       return { text: '', toolCalls: [] };
     }
     if (this.inToolCode) {
       this.inToolCode = false;
+      // this.buffer still holds remaining -- _findClosingBrace needs it
       const endIdx = this._findClosingBrace();
+      this.buffer = '';
       if (endIdx !== -1) {
         const jsonStr = remaining.slice(0, endIdx + 1);
         const tail = remaining.slice(endIdx + 1);
@@ -446,7 +450,9 @@ export class ToolCallStreamParser {
     }
     if (this.inBareCall) {
       this.inBareCall = false;
+      // this.buffer still holds remaining -- _findClosingBrace needs it
       const endIdx = this._findClosingBrace();
+      this.buffer = '';
       if (endIdx !== -1) {
         const jsonStr = remaining.slice(0, endIdx + 1);
         const tail = remaining.slice(endIdx + 1);
@@ -455,9 +461,24 @@ export class ToolCallStreamParser {
       }
       return { text: remaining, toolCalls: [] };
     }
-    // Fallback: detect any remaining tool_code patterns in leftover buffer
+    this.buffer = '';
+    // Fallback: detect remaining tool_code / bare JSON patterns in leftover
     const toolCalls = [];
-    const cleaned = remaining.replace(/\{"tool_code"\s*:\s*"([^"]+?)\(([^]*?)\)"\s*\}/g, (_match, name, rawArgs) => {
+    let cleaned = remaining;
+    // Bare JSON tool calls
+    cleaned = cleaned.replace(/\{"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[^]*?\})\}/g, (_match, name, argsStr) => {
+      const args = safeParseJson(argsStr);
+      if (!args) return _match;
+      toolCalls.push({
+        id: `call_${this._totalSeen}_${Date.now().toString(36)}`,
+        name,
+        argumentsJson: JSON.stringify(args),
+      });
+      this._totalSeen++;
+      return '';
+    });
+    // tool_code patterns
+    cleaned = cleaned.replace(/\{"tool_code"\s*:\s*"([^"]+?)\(([^]*?)\)"\s*\}/g, (_match, name, rawArgs) => {
       try {
         let args = rawArgs.replace(/\\"/g, '"').trim();
         if (args.startsWith('"') && args.endsWith('"')) args = `{"input":${args}}`;
