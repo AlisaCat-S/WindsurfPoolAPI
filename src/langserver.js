@@ -14,6 +14,7 @@ import net from 'net';
 import { resolve as pathResolve } from 'path';
 import { mkdirSync } from 'fs';
 import { log, config } from './config.js';
+import { closeSessionForPort } from './grpc.js';
 
 // Default picked up from config.js (which auto-detects by platform/arch).
 const DEFAULT_BINARY = config.lsBinaryPath;
@@ -144,6 +145,10 @@ export async function ensureLs(proxy = null) {
     const gone = _pool.get(key);
     _pool.delete(key);
     if (gone?.port) {
+      // Drop the pooled HTTP/2 session so the next request to the
+      // replacement LS opens a fresh one instead of writing into a
+      // dead socket (grpc.js caches one session per port).
+      closeSessionForPort(gone.port);
       import('./conversation-pool.js').then(m => m.invalidateFor({ lsPort: gone.port })).catch(() => {});
     }
   });

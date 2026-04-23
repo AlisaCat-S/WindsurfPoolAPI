@@ -7,6 +7,56 @@
 import http2 from 'http2';
 import { log } from './config.js';
 
+// ─── HTTP/2 session pool ───────────────────────────────────
+//
+// Previously every grpcUnary / grpcStream call did its own http2.connect()
+// and client.close() — that's one TCP + HTTP/2 handshake per request, which
+// under chat bursts (poll trajectory every 50 ms + per-chunk Send calls)
+// was (a) wasting a SYN + SETTINGS round-trip per call and (b) burning
+// ephemeral ports, eventually tripping EADDRNOTAVAIL. HTTP/2 is
+// multiplexed — one session happily carries many concurrent streams, so we
+// keep one session per LS port and let it handle all requests.
+//
+// The session is torn down (and a fresh one will be opened on demand) if
+// it emits 'error' or 'close' — callers still see the error on their own
+// `req` object because the stream error is delivered independently.
+
+const _sessionPool = new Map();
+
+function getSession(port) {
+  const key = `localhost:${port}`;
+  let session = _sessionPool.get(key);
+  if (session && !session.destroyed && !session.closed) return session;
+
+  session = http2.connect(`http://localhost:${port}`);
+  session.on('error', (err) => {
+    log.debug(`HTTP/2 session error on port ${port}: ${err.message}`);
+    if (_sessionPool.get(key) === session) _sessionPool.delete(key);
+  });
+  session.on('close', () => {
+    if (_sessionPool.get(key) === session) _sessionPool.delete(key);
+  });
+  // The LS can hang up between requests; unref so an idle session doesn't
+  // keep the Node event loop alive on its own.
+  try { session.unref(); } catch {}
+  _sessionPool.set(key, session);
+  return session;
+}
+
+/**
+ * Close the pooled session for a port (used when the underlying LS is
+ * stopped so the next call opens a fresh session against whatever took
+ * the port).
+ */
+export function closeSessionForPort(port) {
+  const key = `localhost:${port}`;
+  const session = _sessionPool.get(key);
+  if (session) {
+    try { session.close(); } catch {}
+    _sessionPool.delete(key);
+  }
+}
+
 /**
  * Wrap a protobuf payload in a gRPC frame.
  * Format: 1 byte compression (0) + 4 bytes BE length + payload
@@ -62,19 +112,23 @@ export function extractGrpcFrames(buf) {
  */
 export function grpcUnary(port, csrfToken, path, body, timeout = 30000) {
   return new Promise((resolve, reject) => {
-    const client = http2.connect(`http://localhost:${port}`);
+    // Guard against double-settling: req 'error' followed by session
+    // 'error' (or a late 'end' after an abort) would otherwise call
+    // resolve and reject both.
+    let settled = false;
+    const done = (fn, ...args) => {
+      if (settled) return;
+      settled = true;
+      fn(...args);
+    };
+
+    const client = getSession(port);
     const chunks = [];
     let timer;
 
-    client.on('error', (err) => {
-      clearTimeout(timer);
-      client.close();
-      reject(err);
-    });
-
     timer = setTimeout(() => {
-      client.close();
-      reject(new Error('gRPC unary timeout'));
+      try { req.close?.(http2.constants.NGHTTP2_CANCEL); } catch {}
+      done(reject, new Error('gRPC unary timeout'));
     }, timeout);
 
     const req = client.request({
@@ -96,20 +150,26 @@ export function grpcUnary(port, csrfToken, path, body, timeout = 30000) {
 
     req.on('end', () => {
       clearTimeout(timer);
-      client.close();
       if (grpcStatus !== '0') {
         const msg = grpcMessage ? decodeURIComponent(grpcMessage) : `gRPC status ${grpcStatus}`;
-        reject(new Error(msg));
+        done(reject, new Error(msg));
         return;
       }
+      // A unary response is "usually" one frame, but nothing in the gRPC
+      // spec or nghttp2 prevents the server from splitting across frames.
+      // stripGrpcFrame() only returns the first frame — use
+      // extractGrpcFrames() + concat so a chunked proto isn't silently
+      // truncated. Falls back to stripGrpcFrame if extract finds nothing
+      // (preserves old behavior for short / malformed responses).
       const full = Buffer.concat(chunks);
-      resolve(stripGrpcFrame(full));
+      const frames = extractGrpcFrames(full);
+      const payload = frames.length > 0 ? Buffer.concat(frames) : stripGrpcFrame(full);
+      done(resolve, payload);
     });
 
     req.on('error', (err) => {
       clearTimeout(timer);
-      client.close();
-      reject(err);
+      done(reject, err);
     });
 
     req.write(body);
@@ -130,18 +190,17 @@ export function grpcUnary(port, csrfToken, path, body, timeout = 30000) {
 export function grpcStream(port, csrfToken, path, body, opts = {}) {
   const { onData, onEnd, onError, timeout = 300000 } = opts;
 
-  const client = http2.connect(`http://localhost:${port}`);
+  // req may emit both 'end' and 'error' (or error twice) when the server
+  // trailers report non-OK — flip this to only fire one callback.
+  let settled = false;
+  const client = getSession(port);
   let timer;
   let pendingBuf = Buffer.alloc(0);
 
-  client.on('error', (err) => {
-    clearTimeout(timer);
-    client.close();
-    onError?.(err);
-  });
-
   timer = setTimeout(() => {
-    client.close();
+    if (settled) return;
+    settled = true;
+    try { req.close?.(http2.constants.NGHTTP2_CANCEL); } catch {}
     onError?.(new Error('gRPC stream timeout'));
   }, timeout);
 
@@ -150,12 +209,21 @@ export function grpcStream(port, csrfToken, path, body, opts = {}) {
     ':path': path,
     'content-type': 'application/grpc',
     'te': 'trailers',
+    'grpc-accept-encoding': 'identity,gzip,deflate',
+    'user-agent': 'grpc-node/1.108.2',
     'x-codeium-csrf-token': csrfToken,
   });
 
   req.on('data', (chunk) => {
-    // Accumulate and parse gRPC frames
+    if (settled) return;
     pendingBuf = Buffer.concat([pendingBuf, chunk]);
+    if (pendingBuf.length > 100 * 1024 * 1024) {
+      settled = true;
+      clearTimeout(timer);
+      try { req.close?.(http2.constants.NGHTTP2_CANCEL); } catch {}
+      onError?.(new Error('gRPC frame too large (>100MB)'));
+      return;
+    }
 
     while (pendingBuf.length >= 5) {
       const compressed = pendingBuf[0];
@@ -179,7 +247,8 @@ export function grpcStream(port, csrfToken, path, body, opts = {}) {
 
   req.on('end', () => {
     clearTimeout(timer);
-    client.close();
+    if (settled) return;
+    settled = true;
     if (grpcStatus !== '0') {
       const msg = grpcMessage ? decodeURIComponent(grpcMessage) : `gRPC status ${grpcStatus}`;
       onError?.(new Error(msg));
@@ -190,7 +259,8 @@ export function grpcStream(port, csrfToken, path, body, opts = {}) {
 
   req.on('error', (err) => {
     clearTimeout(timer);
-    client.close();
+    if (settled) return;
+    settled = true;
     onError?.(err);
   });
 
