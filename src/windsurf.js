@@ -477,12 +477,36 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
     writeMessageField(2, conversationalConfig),   // conversational = 2
   ];
 
+  // Set BOTH the modern uid field (35) and the deprecated enum field (15)
+  // when available. Seen in the wild (issue #8): free-tier / fresh accounts
+  // report "user status is nil" during InitializeCascadePanelState and then
+  // the server rejects the chat with "neither PlanModel nor RequestedModel
+  // specified" if only field 35 is populated. Setting both covers whichever
+  // field the upstream validator actually reads for that account state.
+  // plan_model_uid (field 34) is also set as a safety fallback — some
+  // backends require the plan model when user status has no tier info.
   if (modelUid) {
-    // field 35: requested_model_uid (string)
-    plannerParts.push(writeStringField(35, modelUid));
-  } else {
-    // field 15: requested_model_deprecated (ModelOrAlias { model = 1 })
+    plannerParts.push(writeStringField(35, modelUid));   // requested_model_uid
+    plannerParts.push(writeStringField(34, modelUid));   // plan_model_uid (safety)
+  }
+  if (modelEnum && modelEnum > 0) {
+    // requested_model_deprecated = ModelOrAlias { model = 1 (enum) }
     plannerParts.push(writeMessageField(15, writeVarintField(1, modelEnum)));
+    // plan_model_deprecated = Model (enum directly at field 1)
+    plannerParts.push(writeVarintField(1, modelEnum));
+  }
+  if (!modelUid && !modelEnum) {
+    throw new Error('buildCascadeConfig: at least one of modelUid or modelEnum must be provided');
+  }
+
+  // max_output_tokens (field 6) — real IDE sends 16384/32768.
+  // Missing this causes truncated long responses.
+  plannerParts.push(writeVarintField(6, 32768));
+
+  // code_changes_section (field 11) — suppress IDE-specific "apply changes" boilerplate
+  if (!toolPreamble) {
+    const emptySection = Buffer.concat([writeVarintField(1, 1), writeStringField(2, '')]);
+    plannerParts.push(writeMessageField(11, emptySection));
   }
 
   const plannerConfig = Buffer.concat(plannerParts);
@@ -493,9 +517,14 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
     writeMessageField(6, writeMessageField(6, Buffer.alloc(0))), // update_strategy.dynamic_update = {}
   ]);
 
-  // CascadeConfig: field 1=planner_config, field 7=brain_config
+  // memory_config (field 5): {enabled=false} — prevent LS injecting user's
+  // stored Cascade memories into API responses
+  const memoryConfig = Buffer.concat([writeBoolField(1, false)]);
+
+  // CascadeConfig: field 1=planner_config, field 5=memory_config, field 7=brain_config
   return Buffer.concat([
     writeMessageField(1, plannerConfig),
+    writeMessageField(5, memoryConfig),
     writeMessageField(7, brainConfig),
   ]);
 }
