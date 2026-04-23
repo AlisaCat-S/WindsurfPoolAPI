@@ -625,34 +625,42 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
       const emitContent = (clean) => {
         if (!clean) return;
         accText += clean;
+        // Lazily attach role on the first real content delta so we never
+        // create a phantom text content-block (content:'') that confuses
+        // Claude Code's internal block tracker ("Content block not found").
+        const delta = { content: clean };
+        if (!rolePrinted) { rolePrinted = true; delta.role = 'assistant'; }
         send({ id, object: 'chat.completion.chunk', created, model,
-          choices: [{ index: 0, delta: { content: clean }, finish_reason: null }] });
+          choices: [{ index: 0, delta, finish_reason: null }] });
       };
       const emitThinking = (clean) => {
         if (!clean) return;
         accThinking += clean;
+        const delta = { reasoning_content: clean };
+        if (!rolePrinted) { rolePrinted = true; delta.role = 'assistant'; }
         send({ id, object: 'chat.completion.chunk', created, model,
-          choices: [{ index: 0, delta: { reasoning_content: clean }, finish_reason: null }] });
+          choices: [{ index: 0, delta, finish_reason: null }] });
       };
 
       const emitToolCallDelta = (tc, idx) => {
+        const delta = {
+          tool_calls: [{
+            index: idx,
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.name, arguments: sanitizeText(tc.argumentsJson || '{}') },
+          }],
+        };
+        if (!rolePrinted) { rolePrinted = true; delta.role = 'assistant'; }
         send({ id, object: 'chat.completion.chunk', created, model,
-          choices: [{ index: 0, delta: {
-            tool_calls: [{
-              index: idx,
-              id: tc.id,
-              type: 'function',
-              function: { name: tc.name, arguments: sanitizeText(tc.argumentsJson || '{}') },
-            }],
-          }, finish_reason: null }] });
+          choices: [{ index: 0, delta, finish_reason: null }] });
       };
 
       const onChunk = (chunk) => {
-        if (!rolePrinted) {
-          rolePrinted = true;
-          send({ id, object: 'chat.completion.chunk', created, model,
-            choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
-        }
+        // Role delta is now lazily attached to the first real
+        // content / thinking / tool_call delta by emit*() helpers,
+        // avoiding a phantom text content-block that triggers
+        // "Content block not found" in Claude Code.
         hadSuccess = true;
 
         if (chunk.text) {
