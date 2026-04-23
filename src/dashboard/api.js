@@ -16,7 +16,7 @@ import { restartLsForProxy } from '../langserver.js';
 import { getLsStatus, stopLanguageServer, startLanguageServer, isLanguageServerRunning } from '../langserver.js';
 import { getStats, resetStats, recordRequest, getUsageSnapshot, exportUsage, importUsage, pruneDetails, pruneDays } from './stats.js';
 import { cacheStats, cacheClear } from '../cache.js';
-import { getExperimental, setExperimental } from '../runtime-config.js';
+import { getExperimental, setExperimental, getIdentityPrompts, setIdentityPrompts, resetIdentityPrompt, DEFAULT_IDENTITY_PROMPTS } from '../runtime-config.js';
 import { poolStats as convPoolStats, poolClear as convPoolClear } from '../conversation-pool.js';
 import { getLogs, subscribeToLogs, unsubscribeFromLogs } from './logger.js';
 import { getProxyConfig, setGlobalProxy, setAccountProxy, removeProxy, getEffectiveProxy } from './proxy-config.js';
@@ -100,6 +100,23 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   if (subpath === '/experimental/conversation-pool' && method === 'DELETE') {
     const n = convPoolClear();
     return json(res, 200, { success: true, cleared: n });
+  }
+
+  // ─── Identity prompts (per-provider editable templates) ─
+  if (subpath === '/identity-prompts' && method === 'GET') {
+    return json(res, 200, {
+      prompts: getIdentityPrompts(),
+      defaults: DEFAULT_IDENTITY_PROMPTS,
+    });
+  }
+  if (subpath === '/identity-prompts' && method === 'PUT') {
+    const prompts = setIdentityPrompts(body || {});
+    return json(res, 200, { success: true, prompts });
+  }
+  if (subpath.match(/^\/identity-prompts\/[^/]+$/) && method === 'DELETE') {
+    const provider = subpath.split('/').pop();
+    const prompts = resetIdentityPrompt(provider);
+    return json(res, 200, { success: true, prompts });
   }
 
   // ─── Cache ────────────────────────────────────────────
