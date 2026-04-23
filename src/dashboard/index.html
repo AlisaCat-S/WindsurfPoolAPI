@@ -2565,7 +2565,8 @@ const App = {
   loadLogs() {
     this.logEntries = [];
     document.getElementById('log-container').innerHTML = '';
-    this.sseConn = new EventSource('/dashboard/api/logs/stream');
+    const sseUrl = this.password ? `/dashboard/api/logs/stream?token=${encodeURIComponent(this.password)}` : '/dashboard/api/logs/stream';
+    this.sseConn = new EventSource(sseUrl);
     this.sseConn.onmessage = (e) => {
       try {
         const entry = JSON.parse(e.data);

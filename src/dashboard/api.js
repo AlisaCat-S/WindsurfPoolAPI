@@ -37,7 +37,9 @@ function json(res, status, body) {
 }
 
 function checkAuth(req) {
-  const pw = req.headers['x-dashboard-password'] || '';
+  // Support auth via header or query param (for SSE/EventSource which can't set headers)
+  const url_auth = new URL(req.url, 'http://localhost');
+  const pw = req.headers['x-dashboard-password'] || url_auth.searchParams.get('token') || '';
   // If dashboard password is set, use it
   if (config.dashboardPassword) return pw === config.dashboardPassword;
   // Otherwise fall back to API key (if set)
