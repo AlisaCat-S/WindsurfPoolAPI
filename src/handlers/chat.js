@@ -267,7 +267,11 @@ export async function handleChatCompletions(body) {
       // First attempt pins to the account that owns the cached cascade.
       acct = acquireAccountByKey(reuseEntry.apiKey, modelKey);
       if (!acct) {
-        log.info('Chat: cascade reuse skipped — owning account not available, falling back to fresh cascade');
+        // Owning account temporarily unavailable (rate-limited, RPM cap, etc.).
+        // Restore entry so the next request can try again instead of permanently
+        // losing the cascade_id.
+        log.info('Chat: cascade reuse skipped — owning account not available, restoring to pool');
+        poolCheckin(fpBefore, reuseEntry);
         reuseEntry = null;
       }
     }
@@ -706,7 +710,9 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
           if (reuseEntry && attempt === 0) {
             acct = acquireAccountByKey(reuseEntry.apiKey, modelKey);
             if (!acct) {
-              log.info('Chat: cascade reuse skipped — owning account not available');
+              // Owning account temporarily unavailable — restore entry to pool.
+              log.info('Chat: cascade reuse skipped — owning account not available, restoring to pool');
+              poolCheckin(fpBefore, reuseEntry);
               reuseEntry = null;
             }
           }
