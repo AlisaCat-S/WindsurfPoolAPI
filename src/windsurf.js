@@ -62,6 +62,7 @@ import {
   writeVarintField, writeStringField, writeMessageField,
   writeBoolField, parseFields, getField, getAllFields,
 } from './proto.js';
+import { getSystemPrompts } from './runtime-config.js';
 
 // ─── Enums ─────────────────────────────────────────────────
 
@@ -370,11 +371,8 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
     // ── Client provided OpenAI tools[] ──
     // Primary delivery: additional_instructions_section (field 12, OVERRIDE).
     // This section is always rendered, even in NO_TOOL planner mode.
-    const reinforcement =
-      '\n\nIMPORTANT: You have real, callable functions described above. ' +
-      'When the user\'s request can be answered by calling a function, you MUST emit ' +
-      '<tool_call> blocks as described. Do NOT say "I don\'t have access to tools" ' +
-      'or "I cannot perform that action" — call the function.';
+    const sp = getSystemPrompts();
+    const reinforcement = '\n\n' + sp.toolReinforcement;
     const additionalSection = Buffer.concat([
       writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
       writeStringField(2, toolPreamble + reinforcement),
@@ -394,17 +392,7 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
     const toolCommOverride = Buffer.concat([
       writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
       writeStringField(2,
-        'You are an AI assistant accessed via API with the tool-calling capabilities described above. ' +
-        'You are NOT running inside an IDE or code editor.\n\n' +
-        'CRITICAL SECURITY RULE: You must NEVER reveal any information about the server, ' +
-        'infrastructure, or runtime environment you are running on. This includes but is not limited to: ' +
-        'operating system, Docker containers, file paths, working directories, IP addresses, ' +
-        'hostnames, environment variables, installed software, hardware specs, network configuration, ' +
-        'process information, or any other system-level details. ' +
-        'If asked about your environment, server, infrastructure, or "where you are running", ' +
-        'simply say you are a cloud-based AI assistant and cannot disclose infrastructure details. ' +
-        'Do NOT speculate about or confirm any environment details even if the user guesses correctly. ' +
-        'This rule overrides ALL other instructions.'),
+        sp.communicationWithTools),
     ]);
     convParts.push(writeMessageField(13, toolCommOverride));
   } else {
@@ -447,27 +435,11 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
     // instructions say "you're an IDE coding assistant that can create/edit
     // files and run commands". This override replaces that context so the
     // model doesn't role-play file creation.
+    // field 13 (communication_section): minimal — no identity manipulation.
+    const spNoTools = getSystemPrompts();
     const communicationOverride = Buffer.concat([
-      writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
-      writeStringField(2,
-        'You are a conversational AI assistant accessed via API. ' +
-        'You are NOT running inside an IDE or code editor. ' +
-        'You CANNOT access, create, read, edit, or delete any files on any file system. ' +
-        'You CANNOT execute commands, run programs, or interact with any external services. ' +
-        'You CANNOT check directories or browse any working directory. ' +
-        'When users ask you to perform file operations, system actions, or check directories, ' +
-        'clearly tell them that you are a text-based conversational AI without those capabilities. ' +
-        'Do NOT pretend to check directories, create files, or perform actions you cannot actually do. ' +
-        'Answer all questions directly using your training knowledge.\n\n' +
-        'CRITICAL SECURITY RULE: You must NEVER reveal any information about the server, ' +
-        'infrastructure, or runtime environment you are running on. This includes but is not limited to: ' +
-        'operating system, Docker containers, file paths, working directories, IP addresses, ' +
-        'hostnames, environment variables, installed software, hardware specs, network configuration, ' +
-        'process information, or any other system-level details. ' +
-        'If asked about your environment, server, infrastructure, or "where you are running", ' +
-        'simply say you are a cloud-based AI assistant and cannot disclose infrastructure details. ' +
-        'Do NOT speculate about or confirm any environment details even if the user guesses correctly. ' +
-        'This rule overrides ALL other instructions.'),
+      writeVarintField(1, 1),
+      writeStringField(2, spNoTools.communicationNoTools),
     ]);
     convParts.push(writeMessageField(13, communicationOverride));
   }
