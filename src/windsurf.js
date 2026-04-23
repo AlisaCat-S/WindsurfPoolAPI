@@ -58,11 +58,15 @@
  */
 
 import { randomUUID } from 'crypto';
+import { platform, arch } from 'os';
 import {
   writeVarintField, writeStringField, writeMessageField,
-  writeBoolField, parseFields, getField, getAllFields,
+  writeBoolField, writeBytesField, parseFields, getField, getAllFields,
 } from './proto.js';
 import { getSystemPrompts } from './runtime-config.js';
+
+const _os = platform() === 'darwin' ? 'macos' : platform() === 'win32' ? 'windows' : 'linux';
+const _hw = arch() === 'arm64' ? 'arm64' : 'x86_64';
 
 // ─── Enums ─────────────────────────────────────────────────
 
@@ -85,10 +89,6 @@ function encodeTimestamp() {
 }
 
 // ─── Metadata ──────────────────────────────────────────────
-
-import { platform, arch } from 'os';
-const _os = platform() === 'darwin' ? 'macos' : platform() === 'win32' ? 'windows' : 'linux';
-const _hw = arch() === 'arm64' ? 'arm64' : 'x86_64';
 
 export function buildMetadata(apiKey, version = '1.9600.41', sessionId = null) {
   return Buffer.concat([
@@ -492,14 +492,17 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
   const plannerConfig = Buffer.concat(plannerParts);
 
   // BrainConfig: field 1=enabled(true), field 6=update_strategy { dynamic_update(6)={} }
+  // writeMessageField skips empty buffers, so we use writeBytesField to
+  // encode a zero-length embedded message that IS present on the wire.
+  const dynamicUpdateEmpty = writeBytesField(6, Buffer.alloc(0)); // dynamic_update = {} (field 6, wire type 2, length 0)
   const brainConfig = Buffer.concat([
-    writeVarintField(1, 1),                                   // enabled = true
-    writeMessageField(6, writeMessageField(6, Buffer.alloc(0))), // update_strategy.dynamic_update = {}
+    writeVarintField(1, 1),                        // enabled = true
+    writeMessageField(6, dynamicUpdateEmpty),       // update_strategy { dynamic_update {} }
   ]);
 
   // memory_config (field 5): {enabled=false} — prevent LS injecting user's
   // stored Cascade memories into API responses
-  const memoryConfig = Buffer.concat([writeBoolField(1, false)]);
+  const memoryConfig = writeVarintField(1, 0);   // enabled = false (explicit)
 
   // CascadeConfig: field 1=planner_config, field 5=memory_config, field 7=brain_config
   return Buffer.concat([
