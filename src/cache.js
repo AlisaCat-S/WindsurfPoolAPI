@@ -25,7 +25,7 @@ function getTTL() {
 
 // Map preserves insertion order → we evict the oldest when over capacity.
 const _store = new Map();
-const _stats = { hits: 0, misses: 0, stores: 0, evictions: 0 };
+const _stats = { hits: 0, misses: 0, stores: 0, evictions: 0, expired: 0 };
 
 function normalize(body) {
   // Only the semantically meaningful fields — ignore stream flag, user id, etc.
@@ -51,7 +51,7 @@ export function cacheGet(key) {
   if (!entry) { _stats.misses++; return null; }
   if (entry.expiresAt < Date.now()) {
     _store.delete(key);
-    _stats.misses++;
+    _stats.expired++;
     return null;
   }
   // Refresh LRU position
@@ -75,13 +75,20 @@ export function cacheSet(key, value) {
 }
 
 export function cacheStats() {
+  // Purge ghost entries (expired but never accessed) for accurate size.
+  const now = Date.now();
+  for (const [k, v] of _store) {
+    if (v.expiresAt < now) { _store.delete(k); _stats.expired++; }
+  }
   const total = _stats.hits + _stats.misses;
   return {
+    activeSize: _store.size,
     size: _store.size,
     maxSize: MAX_ENTRIES,
     ttlMs: getTTL(),
     hits: _stats.hits,
     misses: _stats.misses,
+    expired: _stats.expired,
     stores: _stats.stores,
     evictions: _stats.evictions,
     hitRate: total > 0 ? ((_stats.hits / total) * 100).toFixed(1) : '0.0',
@@ -90,6 +97,6 @@ export function cacheStats() {
 
 export function cacheClear() {
   _store.clear();
-  _stats.hits = 0; _stats.misses = 0; _stats.stores = 0; _stats.evictions = 0;
+  _stats.hits = 0; _stats.misses = 0; _stats.stores = 0; _stats.evictions = 0; _stats.expired = 0;
   log.info('Response cache cleared');
 }
