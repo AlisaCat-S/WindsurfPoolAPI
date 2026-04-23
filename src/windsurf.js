@@ -286,7 +286,11 @@ export function buildUpdateWorkspaceTrustRequest(apiKey, _ignored, trusted = tru
  * Field 1: metadata
  */
 export function buildStartCascadeRequest(apiKey, sessionId) {
-  return writeMessageField(1, buildMetadata(apiKey, undefined, sessionId));
+  return Buffer.concat([
+    writeMessageField(1, buildMetadata(apiKey, undefined, sessionId)),
+    writeVarintField(4, 1),  // source = CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT
+    writeVarintField(5, 1),  // trajectory_type = CORTEX_TRAJECTORY_TYPE_USER_MAINLINE
+  ]);
 }
 
 /**
