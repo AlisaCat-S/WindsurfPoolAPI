@@ -260,7 +260,7 @@ export async function handleChatCompletions(body) {
   // collapse a conversation whose assistant turns contain synthesised
   // <tool_call> markup and whose user turns contain <tool_result> wrappers.
   const reuseEnabled = useCascade && !emulateTools && isExperimentalEnabled('cascadeConversationReuse');
-  const fpBefore = reuseEnabled ? fingerprintBefore(messages) : null;
+  const fpBefore = reuseEnabled ? fingerprintBefore(messages, modelKey) : null;
   let reuseEntry = reuseEnabled ? poolCheckout(fpBefore) : null;
   if (reuseEntry) log.info(`Chat: cascade reuse HIT cascadeId=${reuseEntry.cascadeId.slice(0, 8)}… model=${displayModel}`);
 
@@ -404,7 +404,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     // Check the cascade back into the pool under the *post-turn* fingerprint
     // so the next request in the same conversation can resume it.
     if (poolCtx && cascadeMeta?.cascadeId && allText) {
-      const fpAfter = fingerprintAfter(messages, allText);
+      const fpAfter = fingerprintAfter(messages, modelKey);
       poolCheckin(fpAfter, {
         cascadeId: cascadeMeta.cascadeId,
         sessionId: cascadeMeta.sessionId,
@@ -604,7 +604,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
       // tool-emulation mode because the fingerprint can't collapse turns
       // whose bodies carry <tool_call>/<tool_result> markup.
       const reuseEnabled = useCascade && !emulateTools && isExperimentalEnabled('cascadeConversationReuse');
-      const fpBefore = reuseEnabled ? fingerprintBefore(messages) : null;
+      const fpBefore = reuseEnabled ? fingerprintBefore(messages, modelKey) : null;
       let reuseEntry = reuseEnabled ? poolCheckout(fpBefore) : null;
       if (reuseEntry) log.info(`Chat: cascade reuse HIT cascadeId=${reuseEntry.cascadeId.slice(0, 8)}… stream model=${model}`);
 
@@ -755,7 +755,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             emitThinking(pathStreamThinking.flush());
             // Pool check-in on success (cascade only)
             if (reuseEnabled && cascadeResult?.cascadeId && accText) {
-              const fpAfter = fingerprintAfter(messages, accText);
+              const fpAfter = fingerprintAfter(messages, modelKey);
               poolCheckin(fpAfter, {
                 cascadeId: cascadeResult.cascadeId,
                 sessionId: cascadeResult.sessionId,

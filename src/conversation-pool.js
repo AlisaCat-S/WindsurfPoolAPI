@@ -17,7 +17,16 @@
  *     the same LS and the same account or the cascade_id is meaningless.
  *   - A checked-out entry is removed from the pool. Concurrent second request
  *     with the same fingerprint falls back to a fresh cascade.
- *   - TTL 10 min; LRU eviction at 500 entries.
+ *   - TTL configurable (default 10 min); LRU eviction at 500 entries.
+ *
+ * Fingerprint strategy (aligned with WindsurfAPI #24):
+ *   - Hash only USER messages (excluding the latest one we're about to send).
+ *     User messages have stable format across client round-trips; assistant
+ *     messages don't — the client may restructure content arrays, add
+ *     tool_use blocks, or modify text, causing hash mismatches and 0% hit rate.
+ *   - modelKey and system prompt prefix are included in the hash so that
+ *     model switches or system prompt changes don't erroneously reuse a
+ *     stale cascade.
  */
 
 import { createHash } from 'crypto';
@@ -57,32 +66,56 @@ function canonicalise(messages) {
 }
 
 /**
- * Fingerprint for "resume this conversation". Uses all messages except the
- * latest user turn, which is the one we're about to forward.
- * Returns null when there's nothing to resume (first turn or no prior
- * assistant reply).
+ * Extract a stable prefix from system messages for inclusion in the hash.
+ * This ensures that different system prompts produce different fingerprints.
  */
-export function fingerprintBefore(messages) {
+function systemPrefix(messages) {
+  return messages
+    .filter(m => m.role === 'system')
+    .map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? ''))
+    .join('\0');
+}
+
+/**
+ * Fingerprint for "resume this conversation". Hash only USER messages
+ * (excluding the latest one we're about to send). User messages have stable
+ * format across client round-trips; assistant messages don't — the client
+ * may restructure content arrays, add tool_use blocks, or modify text,
+ * causing hash mismatches and 0% hit rate. (#24)
+ *
+ * modelKey is included so that switching models within the same conversation
+ * doesn't erroneously reuse an old cascade. systemPrefix is included so
+ * that changing the system prompt also invalidates the fingerprint.
+ *
+ * Returns null when there's nothing to resume (first turn or < 2 user turns).
+ */
+export function fingerprintBefore(messages, modelKey = '') {
   if (!Array.isArray(messages) || messages.length < 2) return null;
-  // Must have at least one assistant turn in the history — otherwise the
-  // previous "cascade" never actually existed from our side.
-  const history = messages.slice(0, -1);
-  if (!history.some(m => m.role === 'assistant')) return null;
-  return sha256(JSON.stringify(canonicalise(history)));
+  const users = messages.filter(m => m.role === 'user');
+  if (users.length < 2) return null;
+  return sha256(modelKey + '\0' + systemPrefix(messages) + '\0' + JSON.stringify(canonicalise(users.slice(0, -1))));
 }
 
 /**
  * Fingerprint for the full conversation after we append our assistant turn.
  * This is what the *next* request's `fingerprintBefore` will look up.
+ *
+ * Only user messages are hashed (same strategy as fingerprintBefore).
  */
-export function fingerprintAfter(messages, assistantText) {
-  const full = [...messages, { role: 'assistant', content: assistantText || '' }];
-  return sha256(JSON.stringify(canonicalise(full)));
+export function fingerprintAfter(messages, modelKey = '') {
+  const users = messages.filter(m => m.role === 'user');
+  if (!users.length) return null;
+  return sha256(modelKey + '\0' + systemPrefix(messages) + '\0' + JSON.stringify(canonicalise(users)));
 }
 
 function prune(now) {
+  const ttl = getPoolTTLMs();
+  // First pass: actively clear expired entries.
+  for (const [fp, e] of _pool) {
+    if (now - e.lastAccess > ttl) { _pool.delete(fp); stats.expired++; }
+  }
+  // Second pass: if still over capacity, LRU evict.
   if (_pool.size <= POOL_MAX) return;
-  // Drop oldest entries until back under the cap.
   const entries = [..._pool.entries()].sort((a, b) => a[1].lastAccess - b[1].lastAccess);
   const toDrop = entries.length - POOL_MAX;
   for (let i = 0; i < toDrop; i++) {
@@ -105,6 +138,7 @@ export function checkout(fingerprint) {
   _pool.delete(fingerprint);
   if (Date.now() - entry.lastAccess > getPoolTTLMs()) {
     stats.expired++;
+    stats.misses++;
     return null;
   }
   stats.hits++;
