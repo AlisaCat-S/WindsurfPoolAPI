@@ -1454,6 +1454,12 @@ tbody tr:hover td { background: var(--surface-2); }
             <div class="text-sm text-muted">默认关闭。开启后对当前对话池立即生效。</div>
           </div>
         </div>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <label style="font-weight:500;white-space:nowrap">对话池 TTL</label>
+          <input type="number" id="exp-pool-ttl" class="input" style="width:100px" min="0" step="10" placeholder="600">
+          <span class="text-sm text-muted">秒</span>
+          <button class="btn btn-outline btn-sm" onclick="App.updatePoolTTL()">应用</button>
+        </div>
         <div class="metrics-grid" id="exp-pool-cards"></div>
         <div style="margin-top:12px">
           <button class="btn btn-outline btn-sm" onclick="App.clearConversationPool()">清空对话池</button>
@@ -2810,6 +2816,8 @@ const App = {
     const idCb = document.getElementById('exp-identity-prompt');
     if (idCb) idCb.checked = !!d.flags?.modelIdentityPrompt;
     const pool = d.conversationPool || {};
+    const poolTtlInput = document.getElementById('exp-pool-ttl');
+    if (poolTtlInput) poolTtlInput.value = d.flags?.conversationPoolTTL ?? 600;
     document.getElementById('exp-pool-cards').innerHTML = `
       <div class="card info">
         <div class="card-header"><div class="card-title">命中率</div></div>
@@ -2878,6 +2886,19 @@ const App = {
     try {
       await this.api("PUT", "/experimental", { responseCacheTTL: val });
       this.toast(`缓存 TTL 已设为 ${val} 秒`, "success");
+      this.loadExperimental();
+    } catch (e) {
+      this.toast("设置失败：" + e.message, "error");
+    }
+  },
+
+  async updatePoolTTL() {
+    const input = document.getElementById("exp-pool-ttl");
+    const val = parseInt(input?.value, 10);
+    if (isNaN(val) || val < 0) { this.toast("TTL 必须是非负整数", "error"); return; }
+    try {
+      await this.api("PUT", "/experimental", { conversationPoolTTL: val });
+      this.toast(`对话池 TTL 已设为 ${val} 秒`, "success");
       this.loadExperimental();
     } catch (e) {
       this.toast("设置失败：" + e.message, "error");
