@@ -16,7 +16,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FILE = resolve(__dirname, '..', 'runtime-config.json');
 
 // Keys that hold numeric values instead of booleans.
-const NUMERIC_KEYS = new Set(['responseCacheTTL']);
+const NUMERIC_KEYS = new Set(['responseCacheTTL', 'conversationPoolTTL']);
 
 const DEFAULTS = {
   experimental: {
@@ -31,6 +31,9 @@ const DEFAULTS = {
     // fingerprint matches. Big latency win for long conversations but relies
     // on Windsurf keeping the cascade alive — off by default.
     cascadeConversationReuse: false,
+    // Conversation pool TTL in seconds. Default 600 = 10 minutes.
+    // Controls how long idle cascade entries stay in the reuse pool.
+    conversationPoolTTL: 600,
     // Inject a system prompt that tells the model to identify itself as the
     // requested model (e.g. "You are Claude Opus 4.6, made by Anthropic")
     // instead of revealing the Windsurf/Cascade backend. Enabled by default

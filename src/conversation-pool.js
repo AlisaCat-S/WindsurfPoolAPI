@@ -21,8 +21,14 @@
  */
 
 import { createHash } from 'crypto';
+import { getExperimentalValue } from './runtime-config.js';
 
-const POOL_TTL_MS = 10 * 60 * 1000;
+// Default 10 min; overridable at runtime via dashboard.
+const DEFAULT_POOL_TTL_MS = 10 * 60 * 1000;
+function getPoolTTLMs() {
+  const secs = getExperimentalValue('conversationPoolTTL');
+  return (typeof secs === 'number' && secs >= 0) ? secs * 1000 : DEFAULT_POOL_TTL_MS;
+}
 const POOL_MAX = 500;
 
 // fingerprint -> { cascadeId, sessionId, lsPort, apiKey, createdAt, lastAccess }
@@ -97,7 +103,7 @@ export function checkout(fingerprint) {
   const entry = _pool.get(fingerprint);
   if (!entry) { stats.misses++; return null; }
   _pool.delete(fingerprint);
-  if (Date.now() - entry.lastAccess > POOL_TTL_MS) {
+  if (Date.now() - entry.lastAccess > getPoolTTLMs()) {
     stats.expired++;
     return null;
   }
@@ -142,7 +148,7 @@ export function poolStats() {
   return {
     size: _pool.size,
     maxSize: POOL_MAX,
-    ttlMs: POOL_TTL_MS,
+    ttlMs: getPoolTTLMs(),
     ...stats,
     hitRate: stats.hits + stats.misses > 0
       ? ((stats.hits / (stats.hits + stats.misses)) * 100).toFixed(1)
