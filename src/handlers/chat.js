@@ -24,7 +24,7 @@ import {
 } from './tool-emulation.js';
 import { sanitizeText, PathSanitizeStream } from '../sanitize.js';
 
-const HEARTBEAT_MS = 5_000;
+const HEARTBEAT_MS = 15_000;
 const QUEUE_RETRY_MS = 1_000;
 const QUEUE_MAX_WAIT_MS = 30_000;
 
@@ -184,7 +184,12 @@ export async function handleChatCompletions(body) {
   // When enabled, prepend a system message so the model identifies itself as
   // the requested model (e.g. "I am Claude Opus 4.6") instead of leaking the
   // Cascade/Windsurf backend identity.
-  if (isExperimentalEnabled('modelIdentityPrompt') && modelInfo?.provider) {
+  // Skip identity injection when client already provides a system prompt
+  // (Claude Code / Cline / Cursor). Adding "You are Claude" on top of the
+  // client's system prompt triggers Cascade's anti-injection protection on
+  // reasoning models like opus-4-7. (#22)
+  const clientHasSystem = Array.isArray(messages) && messages.some(m => m?.role === 'system');
+  if (isExperimentalEnabled('modelIdentityPrompt') && modelInfo?.provider && !clientHasSystem) {
     const identityText = buildIdentitySystemMessage(displayModel, modelInfo.provider);
     if (identityText) {
       cascadeMessages = [{ role: 'system', content: identityText }, ...cascadeMessages];
@@ -289,7 +294,7 @@ export async function handleChatCompletions(body) {
         const rl = await checkMessageRateLimit(acct.apiKey, px);
         if (!rl.hasCapacity) {
           log.warn(`Preflight: ${acct.email} has no capacity (remaining=${rl.messagesRemaining}), skipping`);
-          markRateLimited(acct.id, modelKey);
+          markRateLimited(acct.apiKey, 5 * 60 * 1000, modelKey);
           continue;
         }
       } catch (e) {
@@ -491,6 +496,26 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
         body: { error: { message: `${model} 已达速率限制，请稍后重试`, type: 'rate_limit_exceeded', retry_after_ms: rl.retryAfterMs || 60000 } },
       };
     }
+    // Payload too large detection: when the LS crashes with "pending stream
+    // has been canceled" shortly after receiving a huge input, return a
+    // helpful 413 instead of an opaque 502.
+    const isStreamCanceled = /pending stream has been canceled|panel state|ECONNRESET/i.test(err.message);
+    if (isStreamCanceled) {
+      const chars = (messages || []).reduce((n, m) => {
+        const c = m?.content;
+        return n + (typeof c === 'string' ? c.length :
+          Array.isArray(c) ? c.reduce((k, p) => k + (typeof p?.text === 'string' ? p.text.length : 0), 0) : 0);
+      }, 0);
+      if (chars > 500_000) {
+        return {
+          status: 413,
+          body: { error: {
+            message: `请求过大（${Math.round(chars / 1024)}KB 输入）导致语言服务器中断。请尝试：1) 分块发送；2) 先用摘要/summarization 预处理 PDF；3) 减少历史轮数`,
+            type: 'payload_too_large',
+          } },
+        };
+      }
+    }
     return {
       status: err.isModelError ? 403 : 502,
       body: { error: { message: sanitizeText(err.message), type: err.isModelError ? 'model_not_available' : 'upstream_error' } },
@@ -682,7 +707,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               const rl = await checkMessageRateLimit(acct.apiKey, px);
               if (!rl.hasCapacity) {
                 log.warn(`Preflight: ${acct.email} has no capacity (remaining=${rl.messagesRemaining}), skipping`);
-                markRateLimited(acct.id, modelKey);
+                markRateLimited(acct.apiKey, 5 * 60 * 1000, modelKey);
                 continue;
               }
             } catch (e) {
@@ -808,17 +833,29 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
           accountId: currentApiKey, source, credit: 0, tokens: null,
         });
         try {
-          if (!rolePrinted) {
-            send({ id, object: 'chat.completion.chunk', created, model,
-              choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
-          }
-          // Check if failure is due to all accounts being rate-limited
           const rl = isAllRateLimited(modelKey);
           const errMsg = rl.allLimited
             ? `${model} 所有账号均已达速率限制，请 ${Math.ceil(rl.retryAfterMs / 1000)} 秒后重试`
             : sanitizeText(lastErr?.message || 'no accounts');
-          send({ id, object: 'chat.completion.chunk', created, model,
-            choices: [{ index: 0, delta: { content: `\n[Error: ${errMsg}]` }, finish_reason: 'stop' }] });
+
+          if (hadSuccess) {
+            // We already streamed real assistant content. Injecting
+            // "[Error: ...]" as a content delta here would corrupt the
+            // assistant message (clients display it verbatim as model
+            // output). Close cleanly with a plain stop — the caller saw
+            // whatever partial content we produced. Error details only
+            // go to the server log.
+            send({ id, object: 'chat.completion.chunk', created, model,
+              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+            log.warn(`Stream: partial response delivered then failed (${errMsg})`);
+          } else {
+            if (!rolePrinted) {
+              send({ id, object: 'chat.completion.chunk', created, model,
+                choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
+            }
+            send({ id, object: 'chat.completion.chunk', created, model,
+              choices: [{ index: 0, delta: { content: `\n[Error: ${errMsg}]` }, finish_reason: 'stop' }] });
+          }
           res.write('data: [DONE]\n\n');
         } catch {}
         if (!res.writableEnded) res.end();
