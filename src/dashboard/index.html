@@ -2811,20 +2811,30 @@ const App = {
     if (idCb) idCb.checked = !!d.flags?.modelIdentityPrompt;
     const pool = d.conversationPool || {};
     document.getElementById('exp-pool-cards').innerHTML = `
-      <div class="card info">
-        <div class="card-header"><div class="card-title">命中率</div></div>
-        <div class="card-value">${pool.hitRate || '0.0'}%</div>
-        <div class="card-sub">${pool.hits || 0} 命中 / ${pool.misses || 0} 未命中</div>
-      </div>
-      <div class="card">
-        <div class="card-header"><div class="card-title">对话池</div></div>
+      <div class="card success">
+        <div class="card-header"><div class="card-title">✅ 活跃</div></div>
         <div class="card-value">${pool.size || 0}</div>
-        <div class="card-sub">上限 ${pool.maxSize || 0} · TTL ${Math.round((pool.ttlMs || 0) / 60000)} 分钟</div>
+        <div class="card-sub">/ ${pool.maxSize || 0} 上限 · TTL ${Math.round((pool.ttlMs || 0) / 1000)}秒</div>
+      </div>
+      <div class="card info">
+        <div class="card-header"><div class="card-title">🎯 命中</div></div>
+        <div class="card-value">${pool.hits || 0}</div>
+        <div class="card-sub">命中率 ${pool.hitRate || '0.0'}%</div>
       </div>
       <div class="card">
-        <div class="card-header"><div class="card-title">存储次数</div></div>
-        <div class="card-value">${pool.stores || 0}</div>
-        <div class="card-sub">过期 ${pool.expired || 0} · 淘汰 ${pool.evictions || 0}</div>
+        <div class="card-header"><div class="card-title">❌ 未命中</div></div>
+        <div class="card-value">${pool.misses || 0}</div>
+        <div class="card-sub">写入 ${pool.stores || 0} 次</div>
+      </div>
+      <div class="card warning">
+        <div class="card-header"><div class="card-title">⏰ 过期</div></div>
+        <div class="card-value">${pool.expired || 0}</div>
+        <div class="card-sub">TTL 到期清理</div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">🗑 LRU淘汰</div></div>
+        <div class="card-value">${pool.evictions || 0}</div>
+        <div class="card-sub">超容量驱逐</div>
       </div>
     `;
     // Response cache UI
@@ -2834,20 +2844,30 @@ const App = {
     if (ttlInput) ttlInput.value = d.flags?.responseCacheTTL ?? 300;
     const rc = d.responseCache || {};
     document.getElementById("exp-cache-cards").innerHTML = `
+      <div class="card success">
+        <div class="card-header"><div class="card-title">✅ 活跃</div></div>
+        <div class="card-value">${rc.activeSize || 0}</div>
+        <div class="card-sub">/ ${rc.maxSize} 上限 · TTL ${Math.round((rc.ttlMs || 0) / 1000)}秒</div>
+      </div>
       <div class="card info">
-        <div class="card-header"><div class="card-title">命中率</div></div>
-        <div class="card-value">${rc.hitRate || "0.0"}%</div>
-        <div class="card-sub">${rc.hits || 0} 命中 / ${rc.misses || 0} 未命中</div>
+        <div class="card-header"><div class="card-title">🎯 命中</div></div>
+        <div class="card-value">${rc.hits || 0}</div>
+        <div class="card-sub">命中率 ${rc.hitRate || "0.0"}%</div>
       </div>
       <div class="card">
-        <div class="card-header"><div class="card-title">缓存条目</div></div>
-        <div class="card-value">${rc.size || 0}</div>
-        <div class="card-sub">上限 ${rc.maxSize || 0} · TTL ${Math.round((rc.ttlMs || 0) / 1000)}秒</div>
+        <div class="card-header"><div class="card-title">❌ 未命中</div></div>
+        <div class="card-value">${rc.misses || 0}</div>
+        <div class="card-sub">写入 ${rc.stores || 0} 次</div>
+      </div>
+      <div class="card warning">
+        <div class="card-header"><div class="card-title">⏰ 过期</div></div>
+        <div class="card-value">${rc.expired || 0}</div>
+        <div class="card-sub">TTL 到期清理</div>
       </div>
       <div class="card">
-        <div class="card-header"><div class="card-title">存储次数</div></div>
-        <div class="card-value">${rc.stores || 0}</div>
-        <div class="card-sub">淘汰 ${rc.evictions || 0}</div>
+        <div class="card-header"><div class="card-title">🗑 LRU淘汰</div></div>
+        <div class="card-value">${rc.evictions || 0}</div>
+        <div class="card-sub">超容量驱逐</div>
       </div>
     `;
   },
