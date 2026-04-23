@@ -43,7 +43,7 @@ const DEFAULTS = {
     // Reuse Cascade cascade_id across multi-turn requests when the history
     // fingerprint matches. Big latency win for long conversations but relies
     // on Windsurf keeping the cascade alive — off by default.
-    cascadeConversationReuse: false,
+    cascadeConversationReuse: true,
     // Conversation pool TTL in seconds. Default 600 = 10 minutes.
     // Controls how long idle cascade entries stay in the reuse pool.
     conversationPoolTTL: 600,
