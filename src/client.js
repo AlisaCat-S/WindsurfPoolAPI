@@ -206,6 +206,27 @@ export class WindsurfClient {
         cascadeId = await openCascade();
       }
 
+      // ── Reuse baseline ─────────────────────────────────────────────
+      // When resuming an existing cascade, snapshot the current trajectory
+      // step count BEFORE sending the new user message. The polling loop
+      // will skip these pre-existing steps so we don't re-yield text from
+      // prior turns (fixes the 'snowball' response-accumulation bug).
+      let baseStepCount = 0;
+      if (reuseEntry?.cascadeId) {
+        try {
+          const baseProto = buildGetTrajectoryStepsRequest(cascadeId, 0);
+          const baseResp = await grpcUnary(
+            this.port, this.csrfToken,
+            `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(baseProto)
+          );
+          const baseSteps = parseTrajectorySteps(baseResp);
+          baseStepCount = baseSteps.length;
+          log.debug(`Cascade reuse baseline: ${baseStepCount} pre-existing steps`);
+        } catch (e) {
+          log.warn(`Failed to snapshot baseline steps, falling back to 0: ${e.message}`);
+        }
+      }
+
       // Build the text payload. Two cases:
       //   - Resuming an existing cascade: the backend already has the prior
       //     turns cached, so we only send the newest user message.
@@ -305,7 +326,7 @@ export class WindsurfClient {
       // alone) for stall detection fixes the false-positive warm stalls where
       // Cascade is legitimately mid-thinking but `responseText` hasn't moved.
       let lastGrowthAt = Date.now();
-      let lastStepCount = 0;
+      let lastStepCount = baseStepCount;
       const maxWait = 180_000;
       const pollInterval = 250;
       const IDLE_GRACE_MS = 8_000;     // minimum time before idle-break allowed
@@ -403,7 +424,7 @@ export class WindsurfClient {
           lastGrowthAt = Date.now();
         }
 
-        for (let i = 0; i < steps.length; i++) {
+        for (let i = baseStepCount; i < steps.length; i++) {
           const step = steps[i];
 
           // Per-step token usage. Overwrite on every poll so the map always
@@ -503,7 +524,7 @@ export class WindsurfClient {
               this.port, this.csrfToken, `${LS_SERVICE}/GetCascadeTrajectorySteps`, grpcFrame(stepsProto)
             );
             const finalSteps = parseTrajectorySteps(finalResp);
-            for (let i = 0; i < finalSteps.length; i++) {
+            for (let i = baseStepCount; i < finalSteps.length; i++) {
               const step = finalSteps[i];
               const responseText = step.responseText || '';
               const modifiedText = step.modifiedText || '';
