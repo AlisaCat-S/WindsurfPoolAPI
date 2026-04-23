@@ -58,10 +58,15 @@
  */
 
 import { randomUUID } from 'crypto';
+import { platform, arch } from 'os';
 import {
   writeVarintField, writeStringField, writeMessageField,
-  writeBoolField, parseFields, getField, getAllFields,
+  writeBoolField, writeBytesField, parseFields, getField, getAllFields,
 } from './proto.js';
+import { getSystemPrompts } from './runtime-config.js';
+
+const _os = platform() === 'darwin' ? 'macos' : platform() === 'win32' ? 'windows' : 'linux';
+const _hw = arch() === 'arm64' ? 'arm64' : 'x86_64';
 
 // ─── Enums ─────────────────────────────────────────────────
 
@@ -91,10 +96,10 @@ export function buildMetadata(apiKey, version = '1.9600.41', sessionId = null) {
     writeStringField(2, version),             // extension_version
     writeStringField(3, apiKey),              // api_key
     writeStringField(4, 'en'),                // locale
-    writeStringField(5, 'linux'),             // os
+    writeStringField(5, _os),                 // os
     writeStringField(7, version),             // ide_version
-    writeStringField(8, 'x86_64'),            // hardware
-    writeVarintField(9, Date.now()),           // request_id
+    writeStringField(8, _hw),                 // hardware
+    writeVarintField(9, Math.floor(Math.random() * 2**48)),  // request_id
     writeStringField(10, sessionId || randomUUID()), // session_id
     writeStringField(12, 'windsurf'),          // extension_name
   ]);
@@ -111,8 +116,16 @@ function buildChatMessage(content, source, conversationId) {
   ];
 
   if (source === SOURCE.ASSISTANT) {
-    // Assistant uses plain string for field 5
-    parts.push(writeStringField(5, content));
+    // Assistant goes in ChatMessage.action (field 6), not .intent (field 5).
+    // Proto: ChatMessageAction { ChatMessageActionGeneric generic = 1; }
+    //        ChatMessageActionGeneric { string text = 1; }
+    // Previous code wrote a raw string into field 5 which happens to share
+    // wire type (length-delimited) with the expected message, so short
+    // replies slipped through parsing by coincidence — real multi-turn
+    // conversations tripped the LS with "invalid wire-format data".
+    const actionGeneric = writeStringField(1, content);    // ChatMessageActionGeneric.text
+    const action = writeMessageField(1, actionGeneric);    // ChatMessageAction.generic
+    parts.push(writeMessageField(6, action));
   } else {
     // User/System/Tool use ChatMessageIntent { IntentGeneric { text } }
     const intentGeneric = writeStringField(1, content);    // IntentGeneric.text
@@ -140,7 +153,13 @@ export function buildRawGetChatMessageRequest(apiKey, messages, modelEnum, model
   // Field 1: Metadata
   parts.push(writeMessageField(1, buildMetadata(apiKey)));
 
-  // Field 2: repeated ChatMessage (skip system, handled separately)
+  // Field 2: repeated ChatMessage (skip system, handled separately).
+  // Windsurf's legacy RawGetChatMessage backend rejects role=tool and
+  // doesn't know about assistant tool_calls. Degrade both to plain text
+  // so multi-turn conversations that carry tool history still flow
+  // through without triggering "proto: cannot parse invalid wire-format
+  // data" upstream. Cascade models are unaffected — they use a different
+  // endpoint (SendUserCascadeMessage) with full tool support.
   let systemPrompt = '';
   for (const msg of messages) {
     if (msg.role === 'system') {
@@ -150,16 +169,39 @@ export function buildRawGetChatMessageRequest(apiKey, messages, modelEnum, model
     }
 
     let source;
-    switch (msg.role) {
-      case 'user': source = SOURCE.USER; break;
-      case 'assistant': source = SOURCE.ASSISTANT; break;
-      case 'tool': source = SOURCE.TOOL; break;
-      default: source = SOURCE.USER;
-    }
-
-    const text = typeof msg.content === 'string' ? msg.content
+    let text;
+    const baseText = typeof msg.content === 'string' ? msg.content
       : Array.isArray(msg.content) ? msg.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
-      : JSON.stringify(msg.content);
+      : msg.content == null ? '' : JSON.stringify(msg.content);
+
+    switch (msg.role) {
+      case 'user':
+        source = SOURCE.USER;
+        text = baseText;
+        break;
+      case 'assistant':
+        source = SOURCE.ASSISTANT;
+        // If the assistant previously called tools, append the call descriptions
+        // so the model sees its own prior tool usage as text. Empty string OK.
+        if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+          const tcLines = msg.tool_calls.map(tc =>
+            `[called tool ${tc.function?.name || 'unknown'} with ${tc.function?.arguments || '{}'}]`
+          ).join('\n');
+          text = baseText ? `${baseText}\n${tcLines}` : tcLines;
+        } else {
+          text = baseText;
+        }
+        break;
+      case 'tool':
+        // Rewrite tool-result turn as a synthetic user utterance so the
+        // server-side schema accepts it.
+        source = SOURCE.USER;
+        text = `[tool result${msg.tool_call_id ? ` for ${msg.tool_call_id}` : ''}]: ${baseText}`;
+        break;
+      default:
+        source = SOURCE.USER;
+        text = baseText;
+    }
 
     parts.push(writeMessageField(2, buildChatMessage(text, source, conversationId)));
   }
@@ -244,7 +286,11 @@ export function buildUpdateWorkspaceTrustRequest(apiKey, _ignored, trusted = tru
  * Field 1: metadata
  */
 export function buildStartCascadeRequest(apiKey, sessionId) {
-  return writeMessageField(1, buildMetadata(apiKey, undefined, sessionId));
+  return Buffer.concat([
+    writeMessageField(1, buildMetadata(apiKey, undefined, sessionId)),
+    writeVarintField(4, 1),  // source = CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT
+    writeVarintField(5, 1),  // trajectory_type = CORTEX_TRAJECTORY_TYPE_USER_MAINLINE
+  ]);
 }
 
 /**
@@ -333,11 +379,8 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
     // ── Client provided OpenAI tools[] ──
     // Primary delivery: additional_instructions_section (field 12, OVERRIDE).
     // This section is always rendered, even in NO_TOOL planner mode.
-    const reinforcement =
-      '\n\nIMPORTANT: You have real, callable functions described above. ' +
-      'When the user\'s request can be answered by calling a function, you MUST emit ' +
-      '<tool_call> blocks as described. Do NOT say "I don\'t have access to tools" ' +
-      'or "I cannot perform that action" — call the function.';
+    const sp = getSystemPrompts();
+    const reinforcement = '\n\n' + sp.toolReinforcement;
     const additionalSection = Buffer.concat([
       writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
       writeStringField(2, toolPreamble + reinforcement),
@@ -357,17 +400,7 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
     const toolCommOverride = Buffer.concat([
       writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
       writeStringField(2,
-        'You are an AI assistant accessed via API with the tool-calling capabilities described above. ' +
-        'You are NOT running inside an IDE or code editor.\n\n' +
-        'CRITICAL SECURITY RULE: You must NEVER reveal any information about the server, ' +
-        'infrastructure, or runtime environment you are running on. This includes but is not limited to: ' +
-        'operating system, Docker containers, file paths, working directories, IP addresses, ' +
-        'hostnames, environment variables, installed software, hardware specs, network configuration, ' +
-        'process information, or any other system-level details. ' +
-        'If asked about your environment, server, infrastructure, or "where you are running", ' +
-        'simply say you are a cloud-based AI assistant and cannot disclose infrastructure details. ' +
-        'Do NOT speculate about or confirm any environment details even if the user guesses correctly. ' +
-        'This rule overrides ALL other instructions.'),
+        sp.communicationWithTools),
     ]);
     convParts.push(writeMessageField(13, toolCommOverride));
   } else {
@@ -410,27 +443,11 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
     // instructions say "you're an IDE coding assistant that can create/edit
     // files and run commands". This override replaces that context so the
     // model doesn't role-play file creation.
+    // field 13 (communication_section): minimal — no identity manipulation.
+    const spNoTools = getSystemPrompts();
     const communicationOverride = Buffer.concat([
-      writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
-      writeStringField(2,
-        'You are a conversational AI assistant accessed via API. ' +
-        'You are NOT running inside an IDE or code editor. ' +
-        'You CANNOT access, create, read, edit, or delete any files on any file system. ' +
-        'You CANNOT execute commands, run programs, or interact with any external services. ' +
-        'You CANNOT check directories or browse any working directory. ' +
-        'When users ask you to perform file operations, system actions, or check directories, ' +
-        'clearly tell them that you are a text-based conversational AI without those capabilities. ' +
-        'Do NOT pretend to check directories, create files, or perform actions you cannot actually do. ' +
-        'Answer all questions directly using your training knowledge.\n\n' +
-        'CRITICAL SECURITY RULE: You must NEVER reveal any information about the server, ' +
-        'infrastructure, or runtime environment you are running on. This includes but is not limited to: ' +
-        'operating system, Docker containers, file paths, working directories, IP addresses, ' +
-        'hostnames, environment variables, installed software, hardware specs, network configuration, ' +
-        'process information, or any other system-level details. ' +
-        'If asked about your environment, server, infrastructure, or "where you are running", ' +
-        'simply say you are a cloud-based AI assistant and cannot disclose infrastructure details. ' +
-        'Do NOT speculate about or confirm any environment details even if the user guesses correctly. ' +
-        'This rule overrides ALL other instructions.'),
+      writeVarintField(1, 1),
+      writeStringField(2, spNoTools.communicationNoTools),
     ]);
     convParts.push(writeMessageField(13, communicationOverride));
   }
@@ -440,25 +457,57 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
     writeMessageField(2, conversationalConfig),   // conversational = 2
   ];
 
+  // Set BOTH the modern uid field (35) and the deprecated enum field (15)
+  // when available. Seen in the wild (issue #8): free-tier / fresh accounts
+  // report "user status is nil" during InitializeCascadePanelState and then
+  // the server rejects the chat with "neither PlanModel nor RequestedModel
+  // specified" if only field 35 is populated. Setting both covers whichever
+  // field the upstream validator actually reads for that account state.
+  // plan_model_uid (field 34) is also set as a safety fallback — some
+  // backends require the plan model when user status has no tier info.
   if (modelUid) {
-    // field 35: requested_model_uid (string)
-    plannerParts.push(writeStringField(35, modelUid));
-  } else {
-    // field 15: requested_model_deprecated (ModelOrAlias { model = 1 })
+    plannerParts.push(writeStringField(35, modelUid));   // requested_model_uid
+    plannerParts.push(writeStringField(34, modelUid));   // plan_model_uid (safety)
+  }
+  if (modelEnum && modelEnum > 0) {
+    // requested_model_deprecated = ModelOrAlias { model = 1 (enum) }
     plannerParts.push(writeMessageField(15, writeVarintField(1, modelEnum)));
+    // plan_model_deprecated = Model (enum directly at field 1)
+    plannerParts.push(writeVarintField(1, modelEnum));
+  }
+  if (!modelUid && !modelEnum) {
+    throw new Error('buildCascadeConfig: at least one of modelUid or modelEnum must be provided');
+  }
+
+  // max_output_tokens (field 6) — real IDE sends 16384/32768.
+  // Missing this causes truncated long responses.
+  plannerParts.push(writeVarintField(6, 32768));
+
+  // code_changes_section (field 11) — suppress IDE-specific "apply changes" boilerplate
+  if (!toolPreamble) {
+    const emptySection = Buffer.concat([writeVarintField(1, 1), writeStringField(2, '')]);
+    plannerParts.push(writeMessageField(11, emptySection));
   }
 
   const plannerConfig = Buffer.concat(plannerParts);
 
   // BrainConfig: field 1=enabled(true), field 6=update_strategy { dynamic_update(6)={} }
+  // writeMessageField skips empty buffers, so we use writeBytesField to
+  // encode a zero-length embedded message that IS present on the wire.
+  const dynamicUpdateEmpty = writeBytesField(6, Buffer.alloc(0)); // dynamic_update = {} (field 6, wire type 2, length 0)
   const brainConfig = Buffer.concat([
-    writeVarintField(1, 1),                                   // enabled = true
-    writeMessageField(6, writeMessageField(6, Buffer.alloc(0))), // update_strategy.dynamic_update = {}
+    writeVarintField(1, 1),                        // enabled = true
+    writeMessageField(6, dynamicUpdateEmpty),       // update_strategy { dynamic_update {} }
   ]);
 
-  // CascadeConfig: field 1=planner_config, field 7=brain_config
+  // memory_config (field 5): {enabled=false} — prevent LS injecting user's
+  // stored Cascade memories into API responses
+  const memoryConfig = writeVarintField(1, 0);   // enabled = false (explicit)
+
+  // CascadeConfig: field 1=planner_config, field 5=memory_config, field 7=brain_config
   return Buffer.concat([
     writeMessageField(1, plannerConfig),
+    writeMessageField(5, memoryConfig),
     writeMessageField(7, brainConfig),
   ]);
 }
@@ -749,4 +798,155 @@ export function parseTrajectorySteps(buf) {
   }
 
   return results;
+}
+
+// ─── GetUserStatus (authoritative tier + model allowlist) ──
+//
+// LanguageServerService/GetUserStatus → GetUserStatusResponse {
+//   UserStatus user_status = 1;
+//   PlanInfo   plan_info   = 2;
+// }
+// GetUserStatusRequest { Metadata metadata = 1; }
+//
+// Beats our probe-based inferTier — one RPC returns exact tier, trial
+// end time, per-model allowlist with credit multipliers, credit usage.
+// Verified via extracted FileDescriptorProto on 2026-04-21 (scripts/ls-protos).
+
+export function buildGetUserStatusRequest(apiKey) {
+  return writeMessageField(1, buildMetadata(apiKey));
+}
+
+// exa.codeium_common_pb.TeamsTier → free | pro
+// Values as defined in the binary (enum TeamsTier). Paid/trial tiers all
+// map to 'pro' so the caller can unlock premium models uniformly.
+// UNSPECIFIED(0) and WAITLIST_PRO(6) and DEVIN_FREE(19) are the only frees.
+export function mapTeamsTier(t) {
+  if (t === 0 || t === 6 || t === 19) return 'free';
+  if (t > 0) return 'pro';
+  return 'unknown';
+}
+
+// Human-readable label for dashboard display.
+export function teamsTierLabel(t) {
+  return ({
+    0: 'Unspecified', 1: 'Teams', 2: 'Pro', 3: 'Enterprise (SaaS)',
+    4: 'Hybrid', 5: 'Enterprise (Self-Hosted)', 6: 'Waitlist Pro',
+    7: 'Teams Ultimate', 8: 'Pro Ultimate', 9: 'Trial',
+    10: 'Enterprise (Self-Serve)', 11: 'Enterprise (SaaS Pooled)',
+    12: 'Devin Enterprise', 14: 'Devin Teams', 15: 'Devin Teams V2',
+    16: 'Devin Pro', 17: 'Devin Max', 18: 'Max',
+    19: 'Devin Free', 20: 'Devin Trial',
+  })[t] || `Tier ${t}`;
+}
+
+/**
+ * Parse GetUserStatusResponse into a flat object.
+ *
+ * UserStatus field numbers (exa.codeium_common_pb.UserStatus):
+ *   1  pro (bool)
+ *   3  name (string)
+ *   5  team_id (string)
+ *   7  email (string)
+ *   10 teams_tier (TeamsTier enum)
+ *   13 plan_status (PlanStatus message)
+ *   28 user_used_prompt_credits (int64)
+ *   29 user_used_flow_credits (int64)
+ *   33 cascade_model_config_data (CascadeModelConfigData)
+ *   34 windsurf_pro_trial_end_time (Timestamp)
+ *   35 max_num_premium_chat_messages (int64)
+ *
+ * PlanInfo field numbers (exa.codeium_common_pb.PlanInfo):
+ *   1  teams_tier
+ *   2  plan_name (string)
+ *   12 monthly_prompt_credits (int32)
+ *   13 monthly_flow_credits (int32)
+ *   16 is_enterprise (bool)
+ *   17 is_teams (bool)
+ *   21 cascade_allowed_models_config (repeated AllowedModelConfig)
+ *   32 has_paid_features (bool)
+ *
+ * AllowedModelConfig { ModelOrAlias model_or_alias = 1; float credit_multiplier = 2; }
+ * ModelOrAlias       { Model model = 1; ModelAlias alias = 2; }  (oneof in practice)
+ */
+export function parseGetUserStatusResponse(buf) {
+  const out = {
+    pro: false,
+    teamsTier: 0,
+    tierName: '',
+    email: '',
+    displayName: '',
+    teamId: '',
+    userUsedPromptCredits: 0,
+    userUsedFlowCredits: 0,
+    trialEndMs: 0,
+    maxPremiumChatMessages: 0,
+    planName: '',
+    monthlyPromptCredits: 0,
+    monthlyFlowCredits: 0,
+    hasPaidFeatures: false,
+    isTeams: false,
+    isEnterprise: false,
+    allowedModels: [], // [{ modelEnum, alias, multiplier }]
+  };
+
+  if (!buf || buf.length === 0) {
+    out.tierName = mapTeamsTier(out.teamsTier);
+    return out;
+  }
+  const top = parseFields(buf);
+  const usBuf = getField(top, 1, 2)?.value;
+  const piBuf = getField(top, 2, 2)?.value;
+
+  if (usBuf && usBuf.length) {
+    const us = parseFields(usBuf);
+    out.pro = (getField(us, 1, 0)?.value ?? 0) === 1;
+    out.displayName = getField(us, 3, 2)?.value?.toString('utf8') || '';
+    out.teamId = getField(us, 5, 2)?.value?.toString('utf8') || '';
+    out.email = getField(us, 7, 2)?.value?.toString('utf8') || '';
+    out.teamsTier = getField(us, 10, 0)?.value ?? 0;
+    out.userUsedPromptCredits = Number(getField(us, 28, 0)?.value ?? 0);
+    out.userUsedFlowCredits = Number(getField(us, 29, 0)?.value ?? 0);
+    out.maxPremiumChatMessages = Number(getField(us, 35, 0)?.value ?? 0);
+    const tsBuf = getField(us, 34, 2)?.value;
+    if (tsBuf && tsBuf.length) {
+      const tsFields = parseFields(tsBuf);
+      const secs = Number(getField(tsFields, 1, 0)?.value ?? 0);
+      out.trialEndMs = secs * 1000;
+    }
+  }
+
+  if (piBuf && piBuf.length) {
+    const pi = parseFields(piBuf);
+    if (!out.teamsTier) out.teamsTier = getField(pi, 1, 0)?.value ?? 0;
+    out.planName = getField(pi, 2, 2)?.value?.toString('utf8') || '';
+    out.monthlyPromptCredits = Number(getField(pi, 12, 0)?.value ?? 0);
+    out.monthlyFlowCredits = Number(getField(pi, 13, 0)?.value ?? 0);
+    out.isEnterprise = (getField(pi, 16, 0)?.value ?? 0) === 1;
+    out.isTeams = (getField(pi, 17, 0)?.value ?? 0) === 1;
+    out.hasPaidFeatures = (getField(pi, 32, 0)?.value ?? 0) === 1;
+
+    // cascade_allowed_models_config — repeated AllowedModelConfig (field 21)
+    for (const entry of getAllFields(pi, 21)) {
+      if (entry.wireType !== 2) continue;
+      const ac = parseFields(entry.value);
+      const moaBuf = getField(ac, 1, 2)?.value;
+      // credit_multiplier is float → wire type 5 (fixed32)
+      const cmField = getField(ac, 2, 5);
+      let multiplier = 1.0;
+      if (cmField && cmField.value.length === 4) {
+        multiplier = cmField.value.readFloatLE(0);
+      }
+      let modelEnum = 0;
+      let alias = 0;
+      if (moaBuf && moaBuf.length) {
+        const moa = parseFields(moaBuf);
+        modelEnum = getField(moa, 1, 0)?.value ?? 0;
+        alias = getField(moa, 2, 0)?.value ?? 0;
+      }
+      out.allowedModels.push({ modelEnum, alias, multiplier });
+    }
+  }
+
+  out.tierName = mapTeamsTier(out.teamsTier);
+  return out;
 }
