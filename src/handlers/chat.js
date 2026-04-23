@@ -768,7 +768,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             //   3. PathSanitizeStream tail (thinking)
             if (toolParser) {
               const tail = toolParser.flush();
-              if (tail.text) emitContent(pathStreamText.feed(tail.text));
+              if (tail.text && !(emulateTools && collectedToolCalls.length > 0)) emitContent(pathStreamText.feed(tail.text));
               if (emulateTools) {
                 for (const tc of tail.toolCalls) {
                   const idx = collectedToolCalls.length;
@@ -777,7 +777,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
                 }
               }
             }
-            emitContent(pathStreamText.flush());
+            if (!(emulateTools && collectedToolCalls.length > 0)) emitContent(pathStreamText.flush());
             emitThinking(pathStreamThinking.flush());
             // Pool check-in on success (cascade only)
             if (reuseEnabled && cascadeResult?.cascadeId && accText) {
