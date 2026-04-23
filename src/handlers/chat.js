@@ -614,6 +614,11 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
       // against Cascade's system prompt inducing tool markup).
       const toolParser = useCascade ? new ToolCallStreamParser() : null;
       const collectedToolCalls = [];
+      // Hallucination guard: Cascade doesn't truly stop after <tool_call>;
+      // the model may continue generating fake "User:" turns and fake tool
+      // results. Once we detect non-whitespace text AFTER the first tool_call
+      // batch, we seal the response — no more text or tool_calls are emitted.
+      let toolCallSealed = false;
 
       // Streaming path sanitizers. Every text/thinking delta flows through a
       // PathSanitizeStream before leaving the server so /tmp/windsurf-workspace,
@@ -663,6 +668,8 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
         // "Content block not found" in Claude Code.
         hadSuccess = true;
 
+        if (toolCallSealed) return; // hallucination guard — stop processing
+
         if (chunk.text) {
           // Pipeline for text deltas:
           //   raw chunk  →  ToolCallStreamParser (strip <tool_call> blocks)
@@ -672,10 +679,16 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
           if (toolParser) {
             const { text: safe, toolCalls: done } = toolParser.feed(chunk.text);
             safeText = safe;
-            // Only emit tool_call deltas when emulating — otherwise the
-            // parsed calls came from Cascade's built-in tools and are
-            // silently discarded.
             if (emulateTools) {
+              // Hallucination detection: if we already collected tool_calls
+              // and now see non-whitespace text, the model didn't stop after
+              // <tool_call> as instructed — it's hallucinating a multi-turn
+              // conversation (fake "User:" turns, fake tool results, etc.).
+              // Seal the response immediately.
+              if (collectedToolCalls.length > 0 && safe && safe.trim()) {
+                toolCallSealed = true;
+                return;
+              }
               for (const tc of done) {
                 const idx = collectedToolCalls.length;
                 collectedToolCalls.push(tc);
@@ -683,7 +696,12 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               }
             }
           }
-          if (safeText) emitContent(pathStreamText.feed(safeText));
+          // Suppress text after the first tool_call batch — any text between
+          // consecutive <tool_call> blocks is just whitespace/newlines that
+          // the client doesn't need.
+          if (!(emulateTools && collectedToolCalls.length > 0)) {
+            if (safeText) emitContent(pathStreamText.feed(safeText));
+          }
         }
         if (chunk.thinking) {
           emitThinking(pathStreamThinking.feed(chunk.thinking));
