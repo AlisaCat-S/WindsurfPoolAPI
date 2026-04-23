@@ -245,15 +245,21 @@ export class ToolCallStreamParser {
       if (escaped) { escaped = false; continue; }
       if (ch === '\\' && inStr) { escaped = true; continue; }
       if (ch === '"') { inStr = !inStr; continue; }
-      if (inStr) continue;
+      if (inStr) {
+        // JSON spec forbids literal newlines inside strings (must be \n).
+        // If we hit one, the JSON is malformed — reset inStr so brace
+        // matching can recover instead of buffering forever.
+        if (ch === '\n' || ch === '\r') inStr = false;
+        continue;
+      }
       if (ch === '{') depth++;
       if (ch === '}') { depth--; if (depth === 0) return i; }
     }
     return -1;
   }
 
-  _consumeJsonBlock(parseFn, doneCalls, safeParts) {
-    if (this.buffer.length > 65_536) {
+  _consumeJsonBlock(parseFn, doneCalls, safeParts, maxBuf = 65_536) {
+    if (this.buffer.length > maxBuf) {
       safeParts.push(this.buffer);
       this.buffer = '';
       return true;
@@ -356,7 +362,7 @@ export class ToolCallStreamParser {
 
       // ── Inside a bare {"name":"…","arguments":{...}} block ──
       if (this.inBareCall) {
-        if (!this._consumeJsonBlock(s => this._parseBareToolCallJson(s), doneCalls, safeParts)) break;
+        if (!this._consumeJsonBlock(s => this._parseBareToolCallJson(s), doneCalls, safeParts, 8192)) break;
         this.inBareCall = false;
         continue;
       }
